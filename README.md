@@ -1,4 +1,4 @@
-          # 🥚 EggApp — Panduan Lengkap Setup & Menjalankan
+# 🥚 EggApp — Panduan Lengkap Setup & Menjalankan
 
 Sistem deteksi telur retak dua-node:  
 **Raspberry Pi 5** (kamera + servo) ↔ **Laptop RTX 4060** (YOLOv8 inference + GUI)

@@ -1,9 +1,13 @@
 # raspi/camera_streamer.py
-# ─────────────────────────────────────────────────────────────
-# QThread — Capture frame dari Pi Camera V2 via picamera2,
-# encode JPEG, simpan ke queue untuk dikirim ke laptop.
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
+# QThread ï¿½ Capture frame dari Pi Camera V2 (IMX219) via picamera2
+# Raspberry Pi 5 (PiSP / RP1)
+#
+# Fix: AE + AWB keduanya auto dengan ExposureValue +1.0 EV
+# agar sensor tidak underexpose ? DigitalGain tidak turun < 1.0
+# -------------------------------------------------------------
 import cv2
+import time
 import queue
 import logging
 import numpy as np
@@ -15,35 +19,50 @@ logger = logging.getLogger(__name__)
 
 
 class CameraStreamer(QThread):
-    """
-    Thread kamera.
-    Signal:
-        frame_ready(bytes) — JPEG bytes frame terbaru
-        error_occurred(str) — pesan error kamera
-    """
     frame_ready    = pyqtSignal(bytes)
     error_occurred = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._running  = False
-        self._picam2   = None
-        # Queue kecil agar frame sender tidak ketinggalan
+        self._running = False
+        self._picam2  = None
         self.frame_q: queue.Queue = queue.Queue(maxsize=2)
 
-    # ── Lifecycle ─────────────────────────────────────────────
     def run(self):
         try:
             self._picam2 = Picamera2()
             cfg = self._picam2.create_video_configuration(
                 main={"size": (CAM_WIDTH, CAM_HEIGHT), "format": "RGB888"},
-                controls={"FrameRate": CAM_FPS}
+                controls={
+                    "FrameRate":          CAM_FPS,
+                    "NoiseReductionMode": 1,
+                    "Sharpness":          1.0,
+                    "Saturation":         1.0,
+                    "Contrast":           1.0,
+                    "Brightness":         0.0,
+                    # -- AE + AWB auto ï¿½ keduanya harus aktif bersamaan --
+                    # ExposureValue +1.0 EV ? paksa sensor expose lebih terang
+                    # sehingga DigitalGain selalu >= 1.0 (fix bug PiSP)
+                    "AeEnable":           True,
+                    "AeExposureMode":     0,      # 0 = normal
+                    "ExposureValue":      1.0,    # +1 EV, coba 0.0 jika terlalu terang
+                    "AwbEnable":          True,
+                    "AwbMode":            4,      # 4 = indoor/fluorescent
+                }
             )
             self._picam2.configure(cfg)
             self._picam2.start()
-            logger.info(f"[CAM] Pi Camera V2 aktif — {CAM_WIDTH}x{CAM_HEIGHT}@{CAM_FPS}fps")
+
+            # Warmup 2 detik ï¿½ biarkan AE+AWB konvergen
+            time.sleep(2.0)
+
+            logger.info(
+                f"[CAM] Kamera aktif ï¿½ "
+                f"{CAM_WIDTH}x{CAM_HEIGHT}@{CAM_FPS}fps | "
+                f"AE=auto EV=+1.0 AWB=indoor"
+            )
         except Exception as e:
-            msg = f"[CAM] Gagal inisialisasi kamera: {e}"
+            msg = f"[CAM] Gagal inisialisasi: {e}"
             logger.error(msg)
             self.error_occurred.emit(msg)
             return
@@ -51,23 +70,26 @@ class CameraStreamer(QThread):
         self._running = True
         while self._running:
             try:
-                frame_rgb = self._picam2.capture_array()            # RGB888
+                frame_rgb = self._picam2.capture_array("main")
                 frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
-                ok, buf   = cv2.imencode(
+
+                ok, buf = cv2.imencode(
                     '.jpg', frame_bgr,
                     [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]
                 )
                 if not ok:
                     continue
+
                 jpeg_bytes = buf.tobytes()
-                self.frame_ready.emit(jpeg_bytes)   # sinyal ke GUI preview
-                # Masukkan ke queue untuk StreamSenderThread
+                self.frame_ready.emit(jpeg_bytes)
                 try:
                     self.frame_q.put_nowait(jpeg_bytes)
                 except queue.Full:
-                    pass   # drop frame lama — normal saat inference lambat
+                    pass
+
             except Exception as e:
                 logger.warning(f"[CAM] Error capture: {e}")
+                time.sleep(0.01)
 
     def stop(self):
         self._running = False

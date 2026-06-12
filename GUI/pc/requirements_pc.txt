@@ -1,0 +1,18 @@
+# requirements_pc.txt
+# Install via: pip install -r requirements_pc.txt
+
+# YOLO inference (CUDA via pip — pastikan CUDA 12.x sudah terinstall)
+ultralytics>=8.2.0
+
+# PyTorch CUDA 12.1 — jalankan manual:
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Image processing
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# GUI
+PyQt6>=6.5.0
+
+# Konfigurasi
+python-dotenv>=1.0.0

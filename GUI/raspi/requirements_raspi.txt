@@ -1,0 +1,20 @@
+# requirements_raspi.txt
+# Install via: pip install -r requirements_raspi.txt --break-system-packages
+# CATATAN: picamera2 install via apt, BUKAN pip:
+#   sudo apt install -y python3-picamera2
+
+# Image processing
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# GPIO & Servo (pigpiod daemon harus running: sudo pigpiod)
+pigpio>=1.78
+
+# GUI
+PyQt6>=6.5.0
+
+# Konfigurasi & Logging
+python-dotenv>=1.0.0
+
+# Packaging (opsional, untuk build executable)
+# pyinstaller>=6.0.0

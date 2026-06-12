@@ -181,7 +181,7 @@ source venv/bin/activate
 ### 2.3 Install PyTorch CUDA 12.1
 
 ```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 ```
 
 Verifikasi CUDA:

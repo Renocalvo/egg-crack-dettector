@@ -1,74 +1,55 @@
 # raspi/servo_controller.py
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Modul kontrol servo SG90 menggunakan pigpio (hardware PWM DMA)
 # Lebih stabil dan bebas jitter dibanding RPi.GPIO software PWM
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# raspi/servo_controller.py ï¿½ Pi 5 compatible (lgpio)
 import time
+import lgpio
 import logging
-import pigpio
 from config import (SERVO_PIN, SERVO_IDLE_US, SERVO_TERIMA_US,
                     SERVO_TOLAK_US, SERVO_RETURN_SEC)
 
 logger = logging.getLogger(__name__)
 
+# SG90  50Hz: period = 20ms = 20000pikos
+_PWM_FREQ   = 50
+_PERIOD_US  = 1_000_000 // _PWM_FREQ   # 20000 pikos
+
+def _us_to_duty(pulsewidth_us: int) -> float:
+    """Konversi pulsewidth ï¿½s ? duty cycle 0-100 untuk lgpio."""
+    return (pulsewidth_us / _PERIOD_US) * 100.0
+
 
 class ServoController:
-    """
-    Kontrol servo SG90 via pigpio.
-    Gunakan pigpio agar PWM stabil (hardware DMA, bukan software timer).
-
-    Referensi duty cycle SG90 @ 50 Hz:
-        500 µs  = 2.5%  =   0° (posisi minimum)
-       1500 µs  = 7.5%  =  90° (posisi tengah / IDLE)
-       2500 µs = 12.5%  = 180° (posisi maksimum)
-    """
-
     def __init__(self, pin: int = SERVO_PIN):
         self.pin = pin
-        self.pi  = pigpio.pi()
-        if not self.pi.connected:
-            raise RuntimeError(
-                "[SERVO] pigpiod tidak berjalan!\n"
-                "Jalankan terlebih dahulu: sudo pigpiod"
-            )
+        self._h  = lgpio.gpiochip_open(0)   # /dev/gpiochip0
+        lgpio.gpio_claim_output(self._h, self.pin)
         self._move(SERVO_IDLE_US)
-        logger.info(f"[SERVO] Inisialisasi OK — GPIO {pin}, posisi IDLE")
+        logger.info(f"[SERVO] lgpio OK ï¿½ GPIO {pin}, posisi IDLE")
 
-    # ── Private ───────────────────────────────────────────────
     def _move(self, pulsewidth_us: int):
-        self.pi.set_servo_pulsewidth(self.pin, pulsewidth_us)
+        duty = _us_to_duty(pulsewidth_us)
+        lgpio.tx_pwm(self._h, self.pin, _PWM_FREQ, duty)
 
-    # ── Public API ────────────────────────────────────────────
     def idle(self):
-        """Servo ke posisi tengah (90°)."""
         self._move(SERVO_IDLE_US)
-        logger.debug("[SERVO] → IDLE (1500 µs)")
+        logger.debug("[SERVO] ? IDLE")
 
     def terima(self):
-        """
-        Servo ke posisi TERIMA (180°), tahan SERVO_RETURN_SEC detik,
-        lalu kembali ke IDLE otomatis.
-        Dipanggil dari thread — BLOCKING selama return delay.
-        """
         self._move(SERVO_TERIMA_US)
-        logger.info("[SERVO] → DITERIMA (2500 µs / 180°)")
+        logger.info("[SERVO] ? DITERIMA")
         time.sleep(SERVO_RETURN_SEC)
         self._move(SERVO_IDLE_US)
-        logger.debug("[SERVO] → kembali IDLE")
 
     def tolak(self):
-        """
-        Servo ke posisi TOLAK (0°), tahan SERVO_RETURN_SEC detik,
-        lalu kembali ke IDLE otomatis.
-        """
         self._move(SERVO_TOLAK_US)
-        logger.info("[SERVO] → DITOLAK (500 µs / 0°)")
+        logger.info("[SERVO] ? DITOLAK")
         time.sleep(SERVO_RETURN_SEC)
         self._move(SERVO_IDLE_US)
-        logger.debug("[SERVO] → kembali IDLE")
 
     def cleanup(self):
-        """Matikan sinyal PWM dan tutup koneksi pigpio."""
-        self._move(0)      # 0 = nonaktifkan output PWM
-        self.pi.stop()
+        lgpio.tx_pwm(self._h, self.pin, 0, 0)   # stop PWM
+        lgpio.gpiochip_close(self._h)
         logger.info("[SERVO] Cleanup selesai.")

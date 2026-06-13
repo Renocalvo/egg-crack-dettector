@@ -22,12 +22,7 @@ DEVICE      = "cuda" if torch.cuda.is_available() else "cpu"
 # Sesuaikan dengan nama kelas di file best.pt Anda.
 # Cek dengan: from ultralytics import YOLO; print(YOLO('models/best.pt').names)
 CLASS_DECISION: dict[str, str] = {
-    "telur_baik":  "DITERIMA",
-    "telur_retak": "DITOLAK",
-    "egg_good":    "DITERIMA",
-    "egg_cracked": "DITOLAK",
-    "good":        "DITERIMA",
-    "cracked":     "DITOLAK",
+    "egg":         "DITERIMA",
     "crack":       "DITOLAK",
 }
 

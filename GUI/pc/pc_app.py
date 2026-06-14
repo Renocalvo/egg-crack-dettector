@@ -17,15 +17,19 @@ from PyQt6.QtCore    import Qt, QThread, pyqtSignal, pyqtSlot, QTimer
 from PyQt6.QtGui     import QPixmap, QImage, QFont, QColor
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QTextEdit, QGroupBox, QFrame,
-    QSizePolicy, QFileDialog, QMessageBox
+    QLabel, QPushButton, QTextEdit, QGroupBox, QFrame, QLineEdit, QSpinBox,
+    QSizePolicy, QFileDialog, QMessageBox, QDoubleSpinBox, QDialog, QDialogButtonBox
 )
 
+from pathlib import Path
+from dotenv  import load_dotenv, set_key
 from config          import (RASPI_IP, VIDEO_PORT, RESULT_PORT,
-                              MODEL_PATH, LOG_FILE, LOG_LEVEL)
-from yolo_engine      import YoloEngine
+                              MODEL_PATH, CONF_THRESH, LOG_FILE, LOG_LEVEL)
+from yolo_engine           import YoloEngine
+from settings_dialog_pc import SettingsDialog
 from frame_receiver   import FrameReceiverThread
 from result_sender    import ResultSenderThread
+#from settings_dialog  import SettingsDialog
 
 # ── Logging ───────────────────────────────────────────────────
 import os
@@ -105,6 +109,155 @@ QLabel#thumb_label {
     border-radius: 4px;
 }
 """
+
+
+# ═══════════════════════════════════════════════════════════════
+# SettingsDialog — PC
+# ═══════════════════════════════════════════════════════════════
+class SettingsDialog(QDialog):
+    """
+    Window pengaturan terpisah untuk pc_app.
+    Nilai langsung dibaca dari .env sebagai default.
+    Apply: berlaku sekarang (window/idle/conf/IP).
+    Simpan: tulis ke .env, berlaku permanen setelah restart untuk port/model.
+    """
+    def __init__(self, main_win, parent=None):
+        super().__init__(parent)
+        self.main = main_win
+        self.setWindowTitle("⚙️  Pengaturan — EggApp PC")
+        self.setMinimumWidth(420)
+        self.setStyleSheet(parent.styleSheet() if parent else "")
+        self._build()
+
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setSpacing(8)
+        root.setContentsMargins(16, 16, 16, 16)
+
+        def _row(label, widget):
+            r = QHBoxLayout()
+            lbl = QLabel(label)
+            lbl.setFixedWidth(190)
+            r.addWidget(lbl)
+            r.addWidget(widget)
+            return r
+
+        # ── Jaringan ──────────────────────────────────────────
+        grp_net = QGroupBox("Jaringan")
+        net_lay = QVBoxLayout(grp_net)
+
+        self.edit_raspi_ip = QLineEdit(RASPI_IP)
+        net_lay.addLayout(_row("IP Raspberry Pi:", self.edit_raspi_ip))
+
+        row_ports = QHBoxLayout()
+        lbl_p = QLabel("Port Video / Result:")
+        lbl_p.setFixedWidth(190)
+        self.spin_vport = QSpinBox(); self.spin_vport.setRange(1024,65535); self.spin_vport.setValue(VIDEO_PORT)
+        lbl_sl = QLabel("/"); lbl_sl.setFixedWidth(12)
+        self.spin_rport = QSpinBox(); self.spin_rport.setRange(1024,65535); self.spin_rport.setValue(RESULT_PORT)
+        row_ports.addWidget(lbl_p); row_ports.addWidget(self.spin_vport)
+        row_ports.addWidget(lbl_sl); row_ports.addWidget(self.spin_rport)
+        net_lay.addLayout(row_ports)
+        root.addWidget(grp_net)
+
+        # ── Model ─────────────────────────────────────────────
+        grp_model = QGroupBox("Model YOLO")
+        model_lay = QVBoxLayout(grp_model)
+
+        row_model = QHBoxLayout()
+        lbl_m = QLabel("Path Model (.pt):")
+        lbl_m.setFixedWidth(190)
+        self.edit_model = QLineEdit(MODEL_PATH)
+        self.btn_browse = QPushButton("📂")
+        self.btn_browse.setFixedWidth(36)
+        self.btn_browse.clicked.connect(self._browse_model)
+        row_model.addWidget(lbl_m); row_model.addWidget(self.edit_model); row_model.addWidget(self.btn_browse)
+        model_lay.addLayout(row_model)
+
+        self.spin_conf = QDoubleSpinBox()
+        self.spin_conf.setRange(0.1, 1.0); self.spin_conf.setSingleStep(0.05)
+        self.spin_conf.setDecimals(2); self.spin_conf.setValue(CONF_THRESH)
+        model_lay.addLayout(_row("Confidence Threshold:", self.spin_conf))
+        root.addWidget(grp_model)
+
+        # ── Logika Deteksi ────────────────────────────────────
+        grp_logic = QGroupBox("Logika Deteksi")
+        logic_lay = QVBoxLayout(grp_logic)
+
+        self.spin_window = QDoubleSpinBox()
+        self.spin_window.setRange(1.0, 60.0); self.spin_window.setSingleStep(1.0)
+        self.spin_window.setDecimals(1); self.spin_window.setValue(self.main._detection_window)
+        logic_lay.addLayout(_row("Detection Window (detik):", self.spin_window))
+
+        self.spin_idle = QDoubleSpinBox()
+        self.spin_idle.setRange(0.5, 30.0); self.spin_idle.setSingleStep(0.5)
+        self.spin_idle.setDecimals(1); self.spin_idle.setValue(self.main._idle_duration)
+        logic_lay.addLayout(_row("Idle Antar Telur (detik):", self.spin_idle))
+        root.addWidget(grp_logic)
+
+        # ── Tombol ────────────────────────────────────────────
+        btn_apply = QPushButton("✔  Apply Sekarang")
+        btn_apply.setStyleSheet("background:#283593; padding:7px;")
+        btn_save  = QPushButton("💾  Simpan ke .env")
+        btn_save.setStyleSheet("background:#1B5E20; padding:7px;")
+        btn_close = QPushButton("✕  Tutup")
+        btn_close.setStyleSheet("background:#37474F; padding:7px;")
+
+        btn_apply.clicked.connect(self._apply)
+        btn_save.clicked.connect(self._save)
+        btn_close.clicked.connect(self.close)
+
+        row_btn = QHBoxLayout()
+        row_btn.addWidget(btn_apply)
+        row_btn.addWidget(btn_save)
+        row_btn.addWidget(btn_close)
+        root.addLayout(row_btn)
+
+        lbl_note = QLabel(
+            "ℹ️  Apply: Window/Idle/Conf/IP langsung berlaku.\n"
+            "    Port & Model berlaku setelah restart."
+        )
+        lbl_note.setStyleSheet("color:#78909C; font-size:10px;")
+        root.addWidget(lbl_note)
+
+    def _browse_model(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Pilih Model YOLO", "", "PyTorch Model (*.pt);;All Files (*)"
+        )
+        if path:
+            self.edit_model.setText(path)
+
+    def _apply(self):
+        import config as cfg
+        self.main._detection_window = self.spin_window.value()
+        self.main._idle_duration    = self.spin_idle.value()
+        cfg.CONF_THRESH             = self.spin_conf.value()
+        cfg.RASPI_IP                = self.edit_raspi_ip.text().strip()
+        self.main._log(
+            f"[CONFIG] Applied — "
+            f"window:{self.main._detection_window:.1f}s  "
+            f"idle:{self.main._idle_duration:.1f}s  "
+            f"conf:{cfg.CONF_THRESH:.2f}  "
+            f"raspi:{cfg.RASPI_IP}"
+        )
+
+    def _save(self):
+        self._apply()
+        env_path = Path(__file__).parent / '.env'
+        vals = {
+            'RASPI_IP':    self.edit_raspi_ip.text().strip(),
+            'VIDEO_PORT':  str(self.spin_vport.value()),
+            'RESULT_PORT': str(self.spin_rport.value()),
+            'MODEL_PATH':  self.edit_model.text().strip(),
+            'CONF_THRESH': f"{self.spin_conf.value():.2f}",
+        }
+        for k, v in vals.items():
+            set_key(str(env_path), k, v)
+        self.main._log(f"[CONFIG] Disimpan ke {env_path}")
+        QMessageBox.information(self, "Tersimpan",
+            "Konfigurasi disimpan ke .env\n"
+            "Window / Idle / Conf sudah aktif sekarang.\n"
+            "Port & Model berlaku setelah restart.")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -255,17 +408,17 @@ class MainWindow(QMainWindow):
 
         # ── Tombol kontrol ────────────────────────────────────
         ctrl = QHBoxLayout()
-        self.btn_show    = QPushButton("Show")
+        self.btn_settings = QPushButton("⚙️  Settings")
         self.btn_running = QPushButton("▶  Running")
         self.btn_capture = QPushButton("📷 Capture Screen Shot")
         self.btn_running.setObjectName("btn_running")
         self.btn_capture.setObjectName("btn_capture")
 
-        self.btn_show.clicked.connect(self._on_show)
+        self.btn_settings.clicked.connect(self._on_open_settings)
         self.btn_running.clicked.connect(self._on_toggle_running)
         self.btn_capture.clicked.connect(self._on_capture)
 
-        ctrl.addWidget(self.btn_show)
+        ctrl.addWidget(self.btn_settings)
         ctrl.addWidget(self.btn_running)
         ctrl.addStretch()
         ctrl.addWidget(self.btn_capture)
@@ -357,6 +510,24 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     def _on_show(self):
         """Tampilkan info model dan koneksi saat ini."""
+        info = (
+            f"Raspi IP    : {RASPI_IP}\n"
+            f"Video Port  : {VIDEO_PORT}\n"
+            f"Result Port : {RESULT_PORT}\n"
+            f"Model       : {MODEL_PATH}\n"
+            f"Running     : {'Ya' if self._inferring else 'Tidak'}\n"
+            f"Diterima    : {self._counter_ok}\n"
+            f"Ditolak     : {self._counter_fail}"
+        )
+        QMessageBox.information(self, "Info Sistem", info)
+
+    @pyqtSlot()
+    def _on_open_settings(self):
+        dlg = SettingsDialog(self, parent=self)
+        dlg.exec()
+
+    @pyqtSlot()
+    def _on_show(self):
         info = (
             f"Raspi IP    : {RASPI_IP}\n"
             f"Video Port  : {VIDEO_PORT}\n"

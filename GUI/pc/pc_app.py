@@ -12,6 +12,7 @@ import logging
 import numpy as np
 import time
 from datetime import datetime
+from collections import Counter
 from PyQt6.QtCore    import Qt, QThread, pyqtSignal, pyqtSlot, QTimer
 from PyQt6.QtGui     import QPixmap, QImage, QFont, QColor
 from PyQt6.QtWidgets import (
@@ -185,6 +186,15 @@ class MainWindow(QMainWindow):
         self._counter_ok      = 0
         self._counter_fail    = 0
         self._fps_times: list = []
+
+        # ── Logika akumulasi deteksi 10 detik ────────────────
+        self._detection_window = 10.0   # detik pengamatan per telur
+        self._idle_duration    = 2.0    # detik idle antar telur
+        self._accum_classes: list = []  # kelas terdeteksi selama window
+        self._window_start: float = 0.0
+        self._in_idle      = False      # sedang idle antar telur
+        self._idle_start   = 0.0
+        self._window_active = False     # window sedang berjalan
 
         # Thread & Engine
         self._engine: YoloEngine | None          = None
@@ -366,11 +376,14 @@ class MainWindow(QMainWindow):
                 self._log("[YOLO] Memuat model, harap tunggu...")
                 if not self._load_yolo():
                     return
-            self._inferring = True
+            self._inferring      = True
+            self._window_active  = False
+            self._in_idle        = False
+            self._accum_classes  = []
             self.btn_running.setText("■  Stop")
             self.btn_running.setObjectName("btn_running_active")
             self.btn_running.setStyleSheet("")
-            self._log("[YOLO] Inferensi dimulai.")
+            self._log(f"[YOLO] Inferensi dimulai — window: {self._detection_window:.0f}s, idle: {self._idle_duration:.0f}s")
         else:
             # Stop inferensi
             self._inferring = False
@@ -469,18 +482,125 @@ class MainWindow(QMainWindow):
             f"✅ Diterima: {self._counter_ok}   ❌ Ditolak: {self._counter_fail}"
         )
 
-        # ── Log ───────────────────────────────────────────────
+        # ── Log per frame ────────────────────────────────────
         cls_name = result.get("class", "-")
         self._log(
             f"[YOLO] {status} | kelas: {cls_name} | "
             f"conf: {conf:.2f} | cx: {cx} cy: {cy}"
         )
 
-        # ── Kirim JSON ke Raspi ───────────────────────────────
-        if self._sender_thread:
-            self._sender_thread.push(result)
+        # ── Akumulasi deteksi selama window 10 detik ─────────
+        if not self._inferring:
+            return
+
+        now = time.time()
+
+        # Jika sedang idle antar telur, tunggu dulu
+        if self._in_idle:
+            sisa = self._idle_duration - (now - self._idle_start)
+            self.lbl_status.setText(f"● IDLE ({sisa:.1f}s)")
+            self.lbl_status.setObjectName("lbl_status_none")
+            self.lbl_status.setStyleSheet("")
+            if now - self._idle_start >= self._idle_duration:
+                self._in_idle = False
+                self._start_window()
+            return
+
+        # Mulai window baru jika belum aktif
+        if not self._window_active:
+            self._start_window()
+
+        # Akumulasi kelas yang terdeteksi (bukan NO_OBJECT)
+        if cls_name not in ("-", None) and status != "NO_OBJECT":
+            self._accum_classes.append(cls_name.lower())
+
+        # Update countdown di status bar
+        elapsed  = now - self._window_start
+        sisa_win = max(0, self._detection_window - elapsed)
+        detected = set(self._accum_classes)
+        self.lbl_status.setText(
+            f"● SCANNING ({sisa_win:.1f}s) | "
+            f"{'crack ⚠️' if any('crack' in c for c in detected) else 'egg ✓'}"
+        )
+        self.lbl_status.setObjectName("lbl_status_none")
+        self.lbl_status.setStyleSheet("")
+
+        # Window selesai → ambil kesimpulan
+        if elapsed >= self._detection_window:
+            self._conclude()
 
     # ── Helper ────────────────────────────────────────────────
+    def _start_window(self):
+        """Mulai window pengamatan baru untuk satu telur."""
+        self._accum_classes  = []
+        self._window_start   = time.time()
+        self._window_active  = True
+        self._log(f"[SCAN] Window deteksi dimulai ({self._detection_window:.0f} detik)...")
+
+    def _conclude(self):
+        """
+        Ambil kesimpulan dari akumulasi kelas selama window 10 detik.
+        Aturan:
+          - Ada kelas 'crack' (apapun) → DITOLAK
+          - Hanya 'egg' / tidak ada deteksi → DITERIMA
+        """
+        self._window_active = False
+        classes = self._accum_classes
+        total   = len(classes)
+
+        has_crack = any('crack' in c for c in classes)
+        has_egg   = any(c == 'egg' for c in classes)
+
+        if total == 0:
+            # Tidak ada deteksi sama sekali — skip, mulai window baru
+            self._log("[SCAN] Tidak ada objek terdeteksi — skip.")
+            self._start_window()
+            return
+
+        count = Counter(classes)
+        self._log(
+            f"[SCAN] Selesai — total deteksi: {total} | "
+            f"distribusi: {dict(count)}"
+        )
+
+        if has_crack:
+            keputusan = "DITOLAK"
+            self._counter_fail += 1
+            self._log(f"[KEPUTUSAN] ❌ DITOLAK — ditemukan kelas crack")
+        else:
+            keputusan = "DITERIMA"
+            self._counter_ok += 1
+            self._log(f"[KEPUTUSAN] ✅ DITERIMA — tidak ada crack")
+
+        # Update counter label
+        self.lbl_counter.setText(
+            f"✅ Diterima: {self._counter_ok}   ❌ Ditolak: {self._counter_fail}"
+        )
+
+        # Update status label
+        if keputusan == "DITERIMA":
+            self.lbl_status.setText("● DITERIMA")
+            self.lbl_status.setObjectName("lbl_status_ok")
+        else:
+            self.lbl_status.setText("● DITOLAK")
+            self.lbl_status.setObjectName("lbl_status_fail")
+        self.lbl_status.setStyleSheet("")
+
+        # Kirim JSON ke Raspi
+        result_final = {
+            "status":    keputusan,
+            "class":     "crack" if has_crack else "egg",
+            "confidence": 1.0,
+            "timestamp": datetime.now().isoformat()
+        }
+        if self._sender_thread:
+            self._sender_thread.push(result_final)
+
+        # Mulai idle sebelum telur berikutnya
+        self._in_idle    = True
+        self._idle_start = time.time()
+        self._log(f"[IDLE] Menunggu {self._idle_duration:.0f} detik untuk telur berikutnya...")
+
     def _log(self, msg: str, error: bool = False):
         now  = datetime.now().strftime("%H:%M:%S")
         line = f"[{now}] {msg}"

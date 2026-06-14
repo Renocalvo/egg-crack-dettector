@@ -17,12 +17,13 @@ from PyQt6.QtWidgets import (
 )
 
 import config as cfg
-from config           import LOG_FILE, LOG_LEVEL
-from camera_streamer  import CameraStreamer
-from stream_sender    import StreamSenderThread
-from result_receiver  import ResultReceiverThread
-from servo_controller import ServoController
-from settings_dialog_raspi import SettingsDialog   # ← satu-satunya import
+from config               import LOG_FILE, LOG_LEVEL
+from camera_streamer      import CameraStreamer
+from stream_sender        import StreamSenderThread
+from result_receiver      import ResultReceiverThread
+from servo_controller     import ServoController
+from settings_dialog_raspi   import SettingsDialog
+from camera_settings_dialog  import CameraSettingsDialog   # ← dialog kamera baru
 
 # ── Logging ───────────────────────────────────────────────────
 import os
@@ -65,12 +66,14 @@ QPushButton {
 }
 QPushButton:hover    { background-color: #3949AB; }
 QPushButton:disabled { background-color: #37474F; color: #78909C; }
-QPushButton#btn_stop  { background-color: #B71C1C; }
-QPushButton#btn_stop:hover  { background-color: #E53935; }
-QPushButton#btn_reset { background-color: #37474F; }
-QPushButton#btn_reset:hover { background-color: #546E7A; }
+QPushButton#btn_stop     { background-color: #B71C1C; }
+QPushButton#btn_stop:hover     { background-color: #E53935; }
+QPushButton#btn_reset    { background-color: #37474F; }
+QPushButton#btn_reset:hover    { background-color: #546E7A; }
 QPushButton#btn_settings { background-color: #455A64; }
 QPushButton#btn_settings:hover { background-color: #546E7A; }
+QPushButton#btn_cam_settings { background-color: #00695C; }
+QPushButton#btn_cam_settings:hover { background-color: #00897B; }
 QTextEdit {
     background-color: #0D0D1A;
     color: #A5D6A7;
@@ -116,7 +119,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("EggApp — Raspberry Pi Controller")
-        self.setMinimumSize(520, 680)
+        self.setMinimumSize(560, 700)
 
         self._streaming       = False
         self._servo: ServoController | None   = None
@@ -146,32 +149,62 @@ class MainWindow(QMainWindow):
         lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root.addWidget(lbl_title)
 
-        # Kontrol
-        grp_ctrl = QGroupBox("Kontrol")
+        # ── Kontrol Stream ────────────────────────────────────
+        grp_ctrl = QGroupBox("Kontrol Stream")
         ctrl_lay = QHBoxLayout(grp_ctrl)
 
-        self.btn_settings = QPushButton("⚙️  Settings")
-        self.btn_start    = QPushButton("▶  Start Stream")
-        self.btn_stop     = QPushButton("■  Stop Stream")
-        self.btn_reset    = QPushButton("↺  Reset Servo")
+        self.btn_start = QPushButton("▶  Start Stream")
+        self.btn_stop  = QPushButton("■  Stop Stream")
+        self.btn_reset = QPushButton("↺  Reset Servo")
 
-        self.btn_settings.setObjectName("btn_settings")
         self.btn_stop.setObjectName("btn_stop")
         self.btn_reset.setObjectName("btn_reset")
         self.btn_stop.setEnabled(False)
 
-        ctrl_lay.addWidget(self.btn_settings)
         ctrl_lay.addWidget(self.btn_start)
         ctrl_lay.addWidget(self.btn_stop)
         ctrl_lay.addWidget(self.btn_reset)
 
-        self.btn_settings.clicked.connect(self._on_open_settings)
         self.btn_start.clicked.connect(self._on_start)
         self.btn_stop.clicked.connect(self._on_stop)
         self.btn_reset.clicked.connect(self._on_reset_servo)
         root.addWidget(grp_ctrl)
 
-        # Status
+        # ── Pengaturan (Settings) ─────────────────────────────
+        grp_settings = QGroupBox("Pengaturan")
+        settings_lay = QHBoxLayout(grp_settings)
+
+        self.btn_settings     = QPushButton("⚙️  Umum")
+        self.btn_cam_settings = QPushButton("📷  Kamera")
+
+        self.btn_settings.setObjectName("btn_settings")
+        self.btn_cam_settings.setObjectName("btn_cam_settings")
+
+        # Deskripsi singkat di sebelah tombol
+        lbl_settings_hint = QLabel("Jaringan, servo, resolusi")
+        lbl_settings_hint.setStyleSheet("color:#78909C; font-size:10px;")
+        lbl_cam_hint = QLabel("Contrast, EV, AWB, Noise…")
+        lbl_cam_hint.setStyleSheet("color:#78909C; font-size:10px;")
+
+        col_gen = QVBoxLayout()
+        col_gen.setSpacing(2)
+        col_gen.addWidget(self.btn_settings)
+        col_gen.addWidget(lbl_settings_hint)
+
+        col_cam = QVBoxLayout()
+        col_cam.setSpacing(2)
+        col_cam.addWidget(self.btn_cam_settings)
+        col_cam.addWidget(lbl_cam_hint)
+
+        settings_lay.addLayout(col_gen)
+        settings_lay.addLayout(col_cam)
+        settings_lay.addStretch()
+
+        self.btn_settings.clicked.connect(self._on_open_settings)
+        self.btn_cam_settings.clicked.connect(self._on_open_cam_settings)
+        root.addWidget(grp_settings)
+
+        # ── Status ────────────────────────────────────────────
         grp_status = QGroupBox("Status")
         st_lay = QVBoxLayout(grp_status)
 
@@ -196,7 +229,7 @@ class MainWindow(QMainWindow):
         st_lay.addWidget(self.lbl_count)
         root.addWidget(grp_status)
 
-        # Preview kamera
+        # ── Preview kamera ────────────────────────────────────
         grp_cam = QGroupBox("Preview Kamera (Pi Camera V2)")
         cam_lay = QVBoxLayout(grp_cam)
         cam_lay.setContentsMargins(4, 4, 4, 4)
@@ -213,7 +246,7 @@ class MainWindow(QMainWindow):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         root.addWidget(grp_cam, stretch=1)
 
-        # Log
+        # ── Log ───────────────────────────────────────────────
         grp_log = QGroupBox("Log Aktivitas")
         log_lay = QVBoxLayout(grp_log)
         self.log_widget = QTextEdit()
@@ -226,6 +259,11 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     def _on_open_settings(self):
         dlg = SettingsDialog(main_win=self, parent=self)
+        dlg.exec()
+
+    @pyqtSlot()
+    def _on_open_cam_settings(self):
+        dlg = CameraSettingsDialog(main_win=self, parent=self)
         dlg.exec()
 
     # ── Servo init ────────────────────────────────────────────

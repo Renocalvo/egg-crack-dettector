@@ -20,11 +20,11 @@ CAM_FPS      = int(os.getenv("CAM_FPS",      "30"))
 JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "80"))
 
 # ── Servo ─────────────────────────────────────────────────────
-SERVO_PIN        = int(os.getenv("SERVO_PIN", "14"))
-SERVO_IDLE_US    = 1500   # microseconds → 90° (tengah)
-SERVO_TERIMA_US  = 2500   # microseconds → 180° (DITERIMA)
-SERVO_TOLAK_US   = 500    # microseconds → 0°   (DITOLAK)
-SERVO_RETURN_SEC = 1.2    # detik sebelum kembali ke IDLE
+SERVO_PIN        = int(os.getenv("SERVO_PIN",        "14"))
+SERVO_IDLE_US    = int(os.getenv("SERVO_IDLE_US",    "1500"))
+SERVO_TERIMA_US  = int(os.getenv("SERVO_TERIMA_US",  "2500"))
+SERVO_TOLAK_US   = int(os.getenv("SERVO_TOLAK_US",   "500"))
+SERVO_RETURN_SEC = float(os.getenv("SERVO_RETURN_SEC", "1.2"))
 
 # ── Logging ───────────────────────────────────────────────────
 LOG_FILE  = "logs/raspi.log"

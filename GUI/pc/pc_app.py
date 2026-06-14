@@ -136,8 +136,10 @@ class YoloInferenceThread(QThread):
                 frame = self.frame_queue.get(timeout=1.0)
             except queue.Empty:
                 continue
-            annotated, result       = self.engine.infer(frame)
-            false_color, mask       = self.engine.generate_panels(frame)
+
+            # frame dari frame_receiver sudah BGR (hasil cv2.imdecode)
+            annotated, result  = self.engine.infer(frame)
+            false_color, mask  = self.engine.generate_panels(frame)
             self.inference_done.emit(annotated, false_color, mask, result)
 
     def stop(self):
@@ -150,12 +152,19 @@ class YoloInferenceThread(QThread):
 def bgr_to_pixmap(frame_bgr: np.ndarray, w: int, h: int) -> QPixmap:
     rgb   = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     hh, ww, ch = rgb.shape
-    qimg  = QImage(rgb.data, ww, hh, ch * ww, QImage.Format.Format_RGB888)
+    qimg  = QImage(rgb.data.tobytes(), ww, hh, ch * ww, QImage.Format.Format_RGB888)
     return QPixmap.fromImage(qimg).scaled(
         w, h,
         Qt.AspectRatioMode.KeepAspectRatio,
         Qt.TransformationMode.SmoothTransformation
     )
+
+def _render_to_label(frame_bgr: np.ndarray, label: QLabel):
+    """Render frame BGR ke QLabel — scale fit dengan ukuran label saat ini."""
+    if frame_bgr is None or label.width() < 2 or label.height() < 2:
+        return
+    pix = bgr_to_pixmap(frame_bgr, label.width(), label.height())
+    label.setPixmap(pix)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -170,6 +179,9 @@ class MainWindow(QMainWindow):
         # State
         self._inferring       = False
         self._last_annotated  = None   # simpan frame terakhir untuk screenshot
+        self._last_raw_frame  = None   # frame mentah (non-inferring)
+        self._last_false      = None   # false color thumbnail
+        self._last_mask       = None   # mask thumbnail
         self._counter_ok      = 0
         self._counter_fail    = 0
         self._fps_times: list = []
@@ -227,7 +239,6 @@ class MainWindow(QMainWindow):
         right.addWidget(self._wrap_thumb(self.lbl_thumb_rgb,   "RGB Feed"))
         right.addWidget(self._wrap_thumb(self.lbl_thumb_depth, "Depth / False Color"))
         right.addWidget(self._wrap_thumb(self.lbl_thumb_mask,  "Mask / Edge"))
-        right.addStretch()
         mid.addLayout(right, stretch=1)
 
         root.addLayout(mid)
@@ -282,7 +293,12 @@ class MainWindow(QMainWindow):
         lbl = QLabel(placeholder)
         lbl.setObjectName("thumb_label")
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl.setFixedSize(200, 130)
+        lbl.setMinimumSize(160, 110)
+        lbl.setMaximumWidth(280)
+        lbl.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding
+        )
         lbl.setStyleSheet(
             "background:#0D0D1A; border:1px solid #2D2D44; "
             "border-radius:4px; color:#546E7A; font-size:10px;"
@@ -292,6 +308,10 @@ class MainWindow(QMainWindow):
     def _wrap_thumb(self, lbl: QLabel, title: str) -> QGroupBox:
         gb  = QGroupBox(title)
         gb.setStyleSheet("QGroupBox { font-size: 10px; }")
+        gb.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding
+        )
         lay = QVBoxLayout(gb)
         lay.setContentsMargins(2, 12, 2, 2)
         lay.addWidget(lbl)
@@ -378,15 +398,12 @@ class MainWindow(QMainWindow):
     @pyqtSlot(object)
     def _on_frame_received(self, frame: np.ndarray):
         """Frame diterima dari Raspi — update thumbnail RGB, push ke YOLO."""
-        # Thumbnail RGB (frame mentah)
-        pix_rgb = bgr_to_pixmap(frame, 200, 130)
-        self.lbl_thumb_rgb.setPixmap(pix_rgb)
+        self._last_raw_frame = frame
+        _render_to_label(frame, self.lbl_thumb_rgb)
 
         # Jika tidak inferring, tampilkan frame mentah di video utama
         if not self._inferring:
-            pix_main = bgr_to_pixmap(frame, self.lbl_main.width(),
-                                     self.lbl_main.height())
-            self.lbl_main.setPixmap(pix_main)
+            _render_to_label(frame, self.lbl_main)
 
         # Hitung FPS penerimaan
         now = time.time()
@@ -414,13 +431,13 @@ class MainWindow(QMainWindow):
         """
         # ── Video utama ───────────────────────────────────────
         self._last_annotated = annotated
-        pix_main = bgr_to_pixmap(annotated, self.lbl_main.width(),
-                                  self.lbl_main.height())
-        self.lbl_main.setPixmap(pix_main)
+        _render_to_label(annotated, self.lbl_main)
 
         # ── Thumbnail kanan ───────────────────────────────────
-        self.lbl_thumb_depth.setPixmap(bgr_to_pixmap(false_color, 200, 130))
-        self.lbl_thumb_mask.setPixmap(bgr_to_pixmap(mask,        200, 130))
+        self._last_false = false_color
+        self._last_mask  = mask
+        _render_to_label(false_color, self.lbl_thumb_depth)
+        _render_to_label(mask,        self.lbl_thumb_mask)
 
         # ── Info bar ─────────────────────────────────────────
         status = result.get("status", "NO_OBJECT")

@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 # pc/pc_app.py
 # ─────────────────────────────────────────────────────────────
-# EggApp — Node Laptop (RTX 4060 / i7)
-# Fungsi: Terima stream video dari Raspi, inferensi YOLOv8,
-#         tampilkan GUI dengan panel thumbnail, kirim JSON ke Raspi.
+# EggApp — Node Laptop
 # ─────────────────────────────────────────────────────────────
 import sys
 import cv2
@@ -13,23 +11,22 @@ import numpy as np
 import time
 from datetime import datetime
 from collections import Counter
-from PyQt6.QtCore    import Qt, QThread, pyqtSignal, pyqtSlot, QTimer
-from PyQt6.QtGui     import QPixmap, QImage, QFont, QColor
+
+from PyQt6.QtCore    import Qt, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtGui     import QPixmap, QImage
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QTextEdit, QGroupBox, QFrame, QLineEdit, QSpinBox,
-    QSizePolicy, QFileDialog, QMessageBox, QDoubleSpinBox, QDialog, QDialogButtonBox
+    QLabel, QPushButton, QTextEdit, QGroupBox,
+    QSizePolicy, QFileDialog, QMessageBox
 )
 
 from pathlib import Path
-from dotenv  import load_dotenv, set_key
-from config          import (RASPI_IP, VIDEO_PORT, RESULT_PORT,
-                              MODEL_PATH, CONF_THRESH, LOG_FILE, LOG_LEVEL)
-from yolo_engine           import YoloEngine
+import config as cfg
+from config         import LOG_FILE, LOG_LEVEL
+from yolo_engine    import YoloEngine
+from frame_receiver import FrameReceiverThread
+from result_sender  import ResultSenderThread
 from settings_dialog_pc import SettingsDialog
-from frame_receiver   import FrameReceiverThread
-from result_sender    import ResultSenderThread
-#from settings_dialog  import SettingsDialog
 
 # ── Logging ───────────────────────────────────────────────────
 import os
@@ -44,7 +41,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger('pc_app')
 
-# ── Stylesheet ─────────────────────────────────────────────────
+# ── Stylesheet ────────────────────────────────────────────────
 STYLESHEET = """
 QMainWindow, QWidget {
     background-color: #1A1A2E;
@@ -71,26 +68,16 @@ QPushButton {
 }
 QPushButton:hover    { background-color: #3949AB; }
 QPushButton:disabled { background-color: #37474F; color: #78909C; }
-QPushButton#btn_running {
-    background-color: #1B5E20;
-    min-width: 110px;
-}
+QPushButton#btn_running        { background-color: #1B5E20; min-width: 110px; }
 QPushButton#btn_running:hover  { background-color: #2E7D32; }
-QPushButton#btn_running_active {
-    background-color: #B71C1C;
-    min-width: 110px;
-}
+QPushButton#btn_running_active { background-color: #B71C1C; min-width: 110px; }
 QPushButton#btn_running_active:hover { background-color: #E53935; }
 QPushButton#btn_capture { background-color: #4A148C; }
 QPushButton#btn_capture:hover { background-color: #6A1B9A; }
-QLabel#lbl_title {
-    font-size: 15px; font-weight: bold;
-    color: #7986CB; padding: 2px 0;
-}
-QLabel#lbl_counter {
-    font-size: 13px; font-weight: bold;
-    color: #E0E0E0; padding: 2px 6px;
-}
+QPushButton#btn_settings { background-color: #455A64; }
+QPushButton#btn_settings:hover { background-color: #546E7A; }
+QLabel#lbl_title   { font-size: 15px; font-weight: bold; color: #7986CB; }
+QLabel#lbl_counter { font-size: 13px; font-weight: bold; color: #E0E0E0; }
 QLabel#lbl_status_ok   { color: #69F0AE; font-weight: bold; font-size: 14px; }
 QLabel#lbl_status_fail { color: #EF5350; font-weight: bold; font-size: 14px; }
 QLabel#lbl_status_none { color: #FFD54F; font-weight: bold; font-size: 14px; }
@@ -98,7 +85,7 @@ QLabel#lbl_coord { color: #90CAF9; font-size: 12px; }
 QTextEdit {
     background-color: #0D0D1A;
     color: #A5D6A7;
-    font-family: 'Courier New', 'Lucida Console', monospace;
+    font-family: 'Courier New', monospace;
     font-size: 11px;
     border: 1px solid #2D2D44;
     border-radius: 4px;
@@ -112,170 +99,16 @@ QLabel#thumb_label {
 
 
 # ═══════════════════════════════════════════════════════════════
-# SettingsDialog — PC
-# ═══════════════════════════════════════════════════════════════
-# class SettingsDialog(QDialog):
-#     """
-#     Window pengaturan terpisah untuk pc_app.
-#     Nilai langsung dibaca dari .env sebagai default.
-#     Apply: berlaku sekarang (window/idle/conf/IP).
-#     Simpan: tulis ke .env, berlaku permanen setelah restart untuk port/model.
-#     """
-#     def __init__(self, main_win, parent=None):
-#         super().__init__(parent)
-#         self.main = main_win
-#         self.setWindowTitle("⚙️  Pengaturan — EggApp PC")
-#         self.setMinimumWidth(420)
-#         self.setStyleSheet(parent.styleSheet() if parent else "")
-#         self._build()
-
-#     def _build(self):
-#         root = QVBoxLayout(self)
-#         root.setSpacing(8)
-#         root.setContentsMargins(16, 16, 16, 16)
-
-#         def _row(label, widget):
-#             r = QHBoxLayout()
-#             lbl = QLabel(label)
-#             lbl.setFixedWidth(190)
-#             r.addWidget(lbl)
-#             r.addWidget(widget)
-#             return r
-
-#         # ── Jaringan ──────────────────────────────────────────
-#         grp_net = QGroupBox("Jaringan")
-#         net_lay = QVBoxLayout(grp_net)
-
-#         self.edit_raspi_ip = QLineEdit(RASPI_IP)
-#         net_lay.addLayout(_row("IP Raspberry Pi:", self.edit_raspi_ip))
-
-#         row_ports = QHBoxLayout()
-#         lbl_p = QLabel("Port Video / Result:")
-#         lbl_p.setFixedWidth(190)
-#         self.spin_vport = QSpinBox(); self.spin_vport.setRange(1024,65535); self.spin_vport.setValue(VIDEO_PORT)
-#         lbl_sl = QLabel("/"); lbl_sl.setFixedWidth(12)
-#         self.spin_rport = QSpinBox(); self.spin_rport.setRange(1024,65535); self.spin_rport.setValue(RESULT_PORT)
-#         row_ports.addWidget(lbl_p); row_ports.addWidget(self.spin_vport)
-#         row_ports.addWidget(lbl_sl); row_ports.addWidget(self.spin_rport)
-#         net_lay.addLayout(row_ports)
-#         root.addWidget(grp_net)
-
-#         # ── Model ─────────────────────────────────────────────
-#         grp_model = QGroupBox("Model YOLO")
-#         model_lay = QVBoxLayout(grp_model)
-
-#         row_model = QHBoxLayout()
-#         lbl_m = QLabel("Path Model (.pt):")
-#         lbl_m.setFixedWidth(190)
-#         self.edit_model = QLineEdit(MODEL_PATH)
-#         self.btn_browse = QPushButton("📂")
-#         self.btn_browse.setFixedWidth(36)
-#         self.btn_browse.clicked.connect(self._browse_model)
-#         row_model.addWidget(lbl_m); row_model.addWidget(self.edit_model); row_model.addWidget(self.btn_browse)
-#         model_lay.addLayout(row_model)
-
-#         self.spin_conf = QDoubleSpinBox()
-#         self.spin_conf.setRange(0.1, 1.0); self.spin_conf.setSingleStep(0.05)
-#         self.spin_conf.setDecimals(2); self.spin_conf.setValue(CONF_THRESH)
-#         model_lay.addLayout(_row("Confidence Threshold:", self.spin_conf))
-#         root.addWidget(grp_model)
-
-#         # ── Logika Deteksi ────────────────────────────────────
-#         grp_logic = QGroupBox("Logika Deteksi")
-#         logic_lay = QVBoxLayout(grp_logic)
-
-#         self.spin_window = QDoubleSpinBox()
-#         self.spin_window.setRange(1.0, 60.0); self.spin_window.setSingleStep(1.0)
-#         self.spin_window.setDecimals(1); self.spin_window.setValue(self.main._detection_window)
-#         logic_lay.addLayout(_row("Detection Window (detik):", self.spin_window))
-
-#         self.spin_idle = QDoubleSpinBox()
-#         self.spin_idle.setRange(0.5, 30.0); self.spin_idle.setSingleStep(0.5)
-#         self.spin_idle.setDecimals(1); self.spin_idle.setValue(self.main._idle_duration)
-#         logic_lay.addLayout(_row("Idle Antar Telur (detik):", self.spin_idle))
-#         root.addWidget(grp_logic)
-
-#         # ── Tombol ────────────────────────────────────────────
-#         btn_apply = QPushButton("✔  Apply Sekarang")
-#         btn_apply.setStyleSheet("background:#283593; padding:7px;")
-#         btn_save  = QPushButton("💾  Simpan ke .env")
-#         btn_save.setStyleSheet("background:#1B5E20; padding:7px;")
-#         btn_close = QPushButton("✕  Tutup")
-#         btn_close.setStyleSheet("background:#37474F; padding:7px;")
-
-#         btn_apply.clicked.connect(self._apply)
-#         btn_save.clicked.connect(self._save)
-#         btn_close.clicked.connect(self.close)
-
-#         row_btn = QHBoxLayout()
-#         row_btn.addWidget(btn_apply)
-#         row_btn.addWidget(btn_save)
-#         row_btn.addWidget(btn_close)
-#         root.addLayout(row_btn)
-
-#         lbl_note = QLabel(
-#             "ℹ️  Apply: Window/Idle/Conf/IP langsung berlaku.\n"
-#             "    Port & Model berlaku setelah restart."
-#         )
-#         lbl_note.setStyleSheet("color:#78909C; font-size:10px;")
-#         root.addWidget(lbl_note)
-
-#     def _browse_model(self):
-#         path, _ = QFileDialog.getOpenFileName(
-#             self, "Pilih Model YOLO", "", "PyTorch Model (*.pt);;All Files (*)"
-#         )
-#         if path:
-#             self.edit_model.setText(path)
-
-#     def _apply(self):
-#         import config as cfg
-#         self.main._detection_window = self.spin_window.value()
-#         self.main._idle_duration    = self.spin_idle.value()
-#         cfg.CONF_THRESH             = self.spin_conf.value()
-#         cfg.RASPI_IP                = self.edit_raspi_ip.text().strip()
-#         self.main._log(
-#             f"[CONFIG] Applied — "
-#             f"window:{self.main._detection_window:.1f}s  "
-#             f"idle:{self.main._idle_duration:.1f}s  "
-#             f"conf:{cfg.CONF_THRESH:.2f}  "
-#             f"raspi:{cfg.RASPI_IP}"
-#         )
-
-#     def _save(self):
-#         self._apply()
-#         env_path = Path(__file__).parent / '.env'
-#         vals = {
-#             'RASPI_IP':    self.edit_raspi_ip.text().strip(),
-#             'VIDEO_PORT':  str(self.spin_vport.value()),
-#             'RESULT_PORT': str(self.spin_rport.value()),
-#             'MODEL_PATH':  self.edit_model.text().strip(),
-#             'CONF_THRESH': f"{self.spin_conf.value():.2f}",
-#         }
-#         for k, v in vals.items():
-#             set_key(str(env_path), k, v)
-#         self.main._log(f"[CONFIG] Disimpan ke {env_path}")
-#         QMessageBox.information(self, "Tersimpan",
-#             "Konfigurasi disimpan ke .env\n"
-#             "Window / Idle / Conf sudah aktif sekarang.\n"
-#             "Port & Model berlaku setelah restart.")
-
-
-# ═══════════════════════════════════════════════════════════════
 # YoloInferenceThread
 # ═══════════════════════════════════════════════════════════════
 class YoloInferenceThread(QThread):
-    """
-    Ambil frame dari queue, jalankan YoloEngine, emit hasilnya.
-    Queue maxsize=1 → selalu inferensi frame terbaru.
-    """
     inference_done = pyqtSignal(object, object, object, dict)
-    # args: annotated_frame, false_color, mask, result_dict
 
     def __init__(self, engine: YoloEngine, parent=None):
         super().__init__(parent)
-        self.engine      = engine
+        self.engine = engine
         self.frame_queue: queue.Queue = queue.Queue(maxsize=1)
-        self._running    = False
+        self._running = False
 
     def push_frame(self, frame: np.ndarray):
         try:
@@ -290,35 +123,118 @@ class YoloInferenceThread(QThread):
                 frame = self.frame_queue.get(timeout=1.0)
             except queue.Empty:
                 continue
-
-            # frame dari frame_receiver sudah BGR (hasil cv2.imdecode)
-            annotated, result  = self.engine.infer(frame)
-            false_color, mask  = self.engine.generate_panels(frame)
+            annotated, result      = self.engine.infer(frame)
+            false_color, mask      = self.engine.generate_panels(frame)
             self.inference_done.emit(annotated, false_color, mask, result)
 
     def stop(self):
         self._running = False
 
 
-# ═══════════════════════════════════════════════════════════════
-# Utility: ndarray BGR → QPixmap
-# ═══════════════════════════════════════════════════════════════
-def bgr_to_pixmap(frame_bgr: np.ndarray, w: int, h: int) -> QPixmap:
-    rgb   = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    hh, ww, ch = rgb.shape
-    qimg  = QImage(rgb.data.tobytes(), ww, hh, ch * ww, QImage.Format.Format_RGB888)
-    return QPixmap.fromImage(qimg).scaled(
-        w, h,
+# ── Render helper ─────────────────────────────────────────────
+def _render_to_label(frame_bgr: np.ndarray, label: QLabel):
+    if frame_bgr is None or label.width() < 2 or label.height() < 2:
+        return
+    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    h, w, ch = rgb.shape
+    qimg = QImage(rgb.data.tobytes(), w, h, ch * w, QImage.Format.Format_RGB888)
+    pix  = QPixmap.fromImage(qimg).scaled(
+        label.width(), label.height(),
         Qt.AspectRatioMode.KeepAspectRatio,
         Qt.TransformationMode.SmoothTransformation
     )
-
-def _render_to_label(frame_bgr: np.ndarray, label: QLabel):
-    """Render frame BGR ke QLabel — scale fit dengan ukuran label saat ini."""
-    if frame_bgr is None or label.width() < 2 or label.height() < 2:
-        return
-    pix = bgr_to_pixmap(frame_bgr, label.width(), label.height())
     label.setPixmap(pix)
+
+
+# ═══════════════════════════════════════════════════════════════
+# DetectionWindow — logika akumulasi per telur
+# ═══════════════════════════════════════════════════════════════
+class DetectionWindow:
+    """
+    Akumulasi hasil inferensi selama N detik untuk satu telur.
+
+    Aturan keputusan:
+        early_reject : jika kelas 'crack' muncul >= early_crack_count
+                       kali berturut-turut → langsung DITOLAK tanpa
+                       menunggu window selesai (early reject)
+        normal       : setelah window_sec detik, jika ada kelas 'crack'
+                       → DITOLAK, else → DITERIMA
+    """
+    def __init__(self, window_sec: float = 10.0,
+                 early_crack_count: int = 5):
+        self.window_sec        = window_sec
+        self.early_crack_count = early_crack_count
+        self._reset()
+
+    def _reset(self):
+        self._classes:      list  = []   # semua kelas terdeteksi
+        self._crack_streak: int   = 0    # berturut-turut crack
+        self._start:        float = 0.0
+        self._active:       bool  = False
+
+    def start(self):
+        self._reset()
+        self._start  = time.time()
+        self._active = True
+
+    def feed(self, cls_name: str | None) -> str | None:
+        """
+        Masukkan satu hasil inferensi.
+
+        Returns:
+            None           — window belum selesai
+            "DITERIMA"     — keputusan final
+            "DITOLAK"      — keputusan final (normal atau early reject)
+        """
+        if not self._active:
+            return None
+
+        # Akumulasi kelas
+        if cls_name and cls_name not in ("-",):
+            self._classes.append(cls_name.lower())
+            # Hitung streak crack untuk early reject
+            if 'crack' in cls_name.lower():
+                self._crack_streak += 1
+            else:
+                self._crack_streak = 0
+        else:
+            self._crack_streak = 0
+
+        # Early reject: crack N frame berturut-turut
+        if self._crack_streak >= self.early_crack_count:
+            self._active = False
+            return "DITOLAK"
+
+        # Cek apakah window sudah habis
+        elapsed = time.time() - self._start
+        if elapsed >= self.window_sec:
+            self._active = False
+            if len(self._classes) == 0:
+                return None   # tidak ada deteksi sama sekali
+            has_crack = any('crack' in c for c in self._classes)
+            return "DITOLAK" if has_crack else "DITERIMA"
+
+        return None   # masih scanning
+
+    @property
+    def active(self) -> bool:
+        return self._active
+
+    @property
+    def elapsed(self) -> float:
+        return time.time() - self._start if self._active else 0.0
+
+    @property
+    def classes(self) -> list:
+        return list(self._classes)
+
+    @property
+    def crack_streak(self) -> int:
+        return self._crack_streak
+
+    @property
+    def has_crack(self) -> bool:
+        return any('crack' in c for c in self._classes)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -330,36 +246,38 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("EggApp — PC Inspector")
         self.setMinimumSize(900, 680)
 
-        # State
-        self._inferring       = False
-        self._last_annotated  = None   # simpan frame terakhir untuk screenshot
-        self._last_raw_frame  = None   # frame mentah (non-inferring)
-        self._last_false      = None   # false color thumbnail
-        self._last_mask       = None   # mask thumbnail
-        self._counter_ok      = 0
-        self._counter_fail    = 0
+        # ── Parameter deteksi (bisa diubah dari Settings) ────
+        self.detection_window_sec  = 10.0   # detik per telur
+        self.idle_sec              = 2.0    # detik idle antar telur
+        self.early_crack_count     = 5      # frame crack berturut → early reject
+
+        # ── State ────────────────────────────────────────────
+        self._inferring      = False
+        self._last_annotated = None
+        self._last_raw_frame = None
+        self._last_false     = None
+        self._last_mask      = None
+        self._counter_ok     = 0
+        self._counter_fail   = 0
         self._fps_times: list = []
 
-        # ── Logika akumulasi deteksi 10 detik ────────────────
-        self._detection_window = 10.0   # detik pengamatan per telur
-        self._idle_duration    = 2.0    # detik idle antar telur
-        self._accum_classes: list = []  # kelas terdeteksi selama window
-        self._window_start: float = 0.0
-        self._in_idle      = False      # sedang idle antar telur
-        self._idle_start   = 0.0
-        self._window_active = False     # window sedang berjalan
+        # Detection window state
+        self._det_win    = DetectionWindow(
+            self.detection_window_sec, self.early_crack_count)
+        self._in_idle    = False
+        self._idle_start = 0.0
 
-        # Thread & Engine
-        self._engine: YoloEngine | None          = None
-        self._recv_thread: FrameReceiverThread | None   = None
-        self._yolo_thread: YoloInferenceThread | None   = None
-        self._sender_thread: ResultSenderThread | None  = None
+        # ── Threads ──────────────────────────────────────────
+        self._engine: YoloEngine | None               = None
+        self._recv_thread: FrameReceiverThread | None = None
+        self._yolo_thread: YoloInferenceThread | None = None
+        self._sender_thread: ResultSenderThread | None = None
 
         self.setStyleSheet(STYLESHEET)
         self._build_ui()
-        self._start_receiver()   # mulai listen Raspi otomatis saat GUI dibuka
+        self._start_receiver()
 
-    # ── UI Builder ────────────────────────────────────────────
+    # ── UI ────────────────────────────────────────────────────
     def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
@@ -367,7 +285,7 @@ class MainWindow(QMainWindow):
         root.setSpacing(6)
         root.setContentsMargins(10, 10, 10, 10)
 
-        # ── Title + Counter ───────────────────────────────────
+        # Title + counter
         top = QHBoxLayout()
         lbl_title = QLabel("🥚 EggApp — PC Inspector")
         lbl_title.setObjectName("lbl_title")
@@ -379,11 +297,10 @@ class MainWindow(QMainWindow):
         top.addWidget(self.lbl_counter)
         root.addLayout(top)
 
-        # ── Area utama (video + thumbnail) ───────────────────
+        # Video + thumbnail
         mid = QHBoxLayout()
         mid.setSpacing(8)
 
-        # Video utama
         self.lbl_main = QLabel("[ Menunggu stream dari Raspi... ]")
         self.lbl_main.setObjectName("thumb_label")
         self.lbl_main.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -392,58 +309,54 @@ class MainWindow(QMainWindow):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         mid.addWidget(self.lbl_main, stretch=3)
 
-        # Panel thumbnail kanan
         right = QVBoxLayout()
         right.setSpacing(6)
-
         self.lbl_thumb_rgb   = self._make_thumb("RGB Feed")
-        self.lbl_thumb_depth = self._make_thumb("Depth / False Color")
-        self.lbl_thumb_mask  = self._make_thumb("Mask / Edge")
+        self.lbl_thumb_depth = self._make_thumb("False Color")
+        self.lbl_thumb_mask  = self._make_thumb("Edge / Mask")
         right.addWidget(self._wrap_thumb(self.lbl_thumb_rgb,   "RGB Feed"))
-        right.addWidget(self._wrap_thumb(self.lbl_thumb_depth, "Depth / False Color"))
-        right.addWidget(self._wrap_thumb(self.lbl_thumb_mask,  "Mask / Edge"))
+        right.addWidget(self._wrap_thumb(self.lbl_thumb_depth, "False Color"))
+        right.addWidget(self._wrap_thumb(self.lbl_thumb_mask,  "Edge / Mask"))
         mid.addLayout(right, stretch=1)
-
         root.addLayout(mid)
 
-        # ── Tombol kontrol ────────────────────────────────────
+        # Tombol
         ctrl = QHBoxLayout()
         self.btn_settings = QPushButton("⚙️  Settings")
-        self.btn_running = QPushButton("▶  Running")
-        self.btn_capture = QPushButton("📷 Capture Screen Shot")
+        self.btn_running  = QPushButton("▶  Running")
+        self.btn_capture  = QPushButton("📷 Capture")
+        self.btn_settings.setObjectName("btn_settings")
         self.btn_running.setObjectName("btn_running")
         self.btn_capture.setObjectName("btn_capture")
-
         self.btn_settings.clicked.connect(self._on_open_settings)
         self.btn_running.clicked.connect(self._on_toggle_running)
         self.btn_capture.clicked.connect(self._on_capture)
-
         ctrl.addWidget(self.btn_settings)
         ctrl.addWidget(self.btn_running)
         ctrl.addStretch()
         ctrl.addWidget(self.btn_capture)
         root.addLayout(ctrl)
 
-        # ── Info bar ─────────────────────────────────────────
+        # Info bar
         info = QHBoxLayout()
-        self.lbl_coord   = QLabel("Center Coordinate\nx: —,  y: —")
+        self.lbl_coord  = QLabel("Center\nx: —  y: —")
         self.lbl_coord.setObjectName("lbl_coord")
-        self.lbl_fps     = QLabel("FPS: —")
+        self.lbl_fps    = QLabel("FPS: —")
         self.lbl_fps.setStyleSheet("color:#90CAF9;")
-        self.lbl_conf    = QLabel("Confidence: —")
+        self.lbl_conf   = QLabel("Conf: —")
         self.lbl_conf.setStyleSheet("color:#90CAF9;")
-        self.lbl_status  = QLabel("● MENUNGGU")
+        self.lbl_status = QLabel("● MENUNGGU")
         self.lbl_status.setObjectName("lbl_status_none")
         info.addWidget(self.lbl_coord)
         info.addStretch()
         info.addWidget(self.lbl_fps)
         info.addWidget(QLabel("  |  "))
         info.addWidget(self.lbl_conf)
-        info.addWidget(QLabel("  |  Status:"))
+        info.addWidget(QLabel("  |  "))
         info.addWidget(self.lbl_status)
         root.addLayout(info)
 
-        # ── Log ───────────────────────────────────────────────
+        # Log
         grp_log = QGroupBox("Log Inferensi")
         log_lay = QVBoxLayout(grp_log)
         self.log_widget = QTextEdit()
@@ -458,105 +371,69 @@ class MainWindow(QMainWindow):
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl.setMinimumSize(160, 110)
         lbl.setMaximumWidth(280)
-        lbl.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Expanding
-        )
+        lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         lbl.setStyleSheet(
             "background:#0D0D1A; border:1px solid #2D2D44; "
-            "border-radius:4px; color:#546E7A; font-size:10px;"
-        )
+            "border-radius:4px; color:#546E7A; font-size:10px;")
         return lbl
 
     def _wrap_thumb(self, lbl: QLabel, title: str) -> QGroupBox:
-        gb  = QGroupBox(title)
+        gb = QGroupBox(title)
         gb.setStyleSheet("QGroupBox { font-size: 10px; }")
-        gb.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Expanding
-        )
+        gb.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         lay = QVBoxLayout(gb)
         lay.setContentsMargins(2, 12, 2, 2)
         lay.addWidget(lbl)
         return gb
 
-    # ── Start background threads ──────────────────────────────
+    # ── Threads ───────────────────────────────────────────────
     def _start_receiver(self):
         self._recv_thread = FrameReceiverThread()
         self._recv_thread.frame_ready.connect(self._on_frame_received)
-        self._recv_thread.status_changed.connect(self._on_recv_status)
+        self._recv_thread.status_changed.connect(
+            lambda s: self._log(f"[KONEKSI] Raspi: {s}"))
         self._recv_thread.start()
 
         self._sender_thread = ResultSenderThread()
         self._sender_thread.start()
-
         self._log("[RECV] Menunggu koneksi Raspi...")
 
-    def _load_yolo(self):
-        """Load YOLO engine (blocking, dipanggil saat tombol Running ditekan)."""
+    def _load_yolo(self) -> bool:
         try:
             self._engine      = YoloEngine()
             self._yolo_thread = YoloInferenceThread(self._engine)
             self._yolo_thread.inference_done.connect(self._on_inference_done)
             self._yolo_thread.start()
-            self._log(f"[YOLO] Model dimuat. Kelas: {list(self._engine.model.names.values())}")
+            self._log(f"[YOLO] Model siap. Kelas: {list(self._engine.model.names.values())}")
             return True
         except Exception as e:
             self._log(f"[ERROR] Gagal load model: {e}", error=True)
             QMessageBox.critical(self, "Error Model", str(e))
             return False
 
-    # ── Slot Tombol ───────────────────────────────────────────
-    @pyqtSlot()
-    def _on_show(self):
-        """Tampilkan info model dan koneksi saat ini."""
-        info = (
-            f"Raspi IP    : {RASPI_IP}\n"
-            f"Video Port  : {VIDEO_PORT}\n"
-            f"Result Port : {RESULT_PORT}\n"
-            f"Model       : {MODEL_PATH}\n"
-            f"Running     : {'Ya' if self._inferring else 'Tidak'}\n"
-            f"Diterima    : {self._counter_ok}\n"
-            f"Ditolak     : {self._counter_fail}"
-        )
-        QMessageBox.information(self, "Info Sistem", info)
-
+    # ── Slots tombol ──────────────────────────────────────────
     @pyqtSlot()
     def _on_open_settings(self):
-        dlg = SettingsDialog(self, parent=self)
+        dlg = SettingsDialog(main_win=self, parent=self)
         dlg.exec()
-
-    @pyqtSlot()
-    def _on_show(self):
-        info = (
-            f"Raspi IP    : {RASPI_IP}\n"
-            f"Video Port  : {VIDEO_PORT}\n"
-            f"Result Port : {RESULT_PORT}\n"
-            f"Model       : {MODEL_PATH}\n"
-            f"Running     : {'Ya' if self._inferring else 'Tidak'}\n"
-            f"Diterima    : {self._counter_ok}\n"
-            f"Ditolak     : {self._counter_fail}"
-        )
-        QMessageBox.information(self, "Info Sistem", info)
 
     @pyqtSlot()
     def _on_toggle_running(self):
         if not self._inferring:
-            # Mulai inferensi
             if self._engine is None:
-                self._log("[YOLO] Memuat model, harap tunggu...")
+                self._log("[YOLO] Memuat model...")
                 if not self._load_yolo():
                     return
-            self._inferring      = True
-            self._window_active  = False
-            self._in_idle        = False
-            self._accum_classes  = []
+            self._inferring = True
+            self._reset_window_state()
             self.btn_running.setText("■  Stop")
             self.btn_running.setObjectName("btn_running_active")
             self.btn_running.setStyleSheet("")
-            self._log(f"[YOLO] Inferensi dimulai — window: {self._detection_window:.0f}s, idle: {self._idle_duration:.0f}s")
+            self._log(
+                f"[YOLO] Mulai — window:{self.detection_window_sec:.0f}s  "
+                f"idle:{self.idle_sec:.0f}s  "
+                f"early_crack:{self.early_crack_count}x")
         else:
-            # Stop inferensi
             self._inferring = False
             self.btn_running.setText("▶  Running")
             self.btn_running.setObjectName("btn_running")
@@ -566,218 +443,166 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     def _on_capture(self):
         if self._last_annotated is None:
-            self._log("[CAPTURE] Belum ada frame untuk disimpan.", error=True)
+            self._log("[CAPTURE] Belum ada frame.", error=True)
             return
-        ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         path, _ = QFileDialog.getSaveFileName(
             self, "Simpan Screenshot",
-            f"eggapp_capture_{ts}.jpg",
-            "JPEG (*.jpg);;PNG (*.png)"
-        )
+            f"eggapp_{ts}.jpg", "JPEG (*.jpg);;PNG (*.png)")
         if path:
             cv2.imwrite(path, self._last_annotated)
             self._log(f"[CAPTURE] Tersimpan: {path}")
 
-    # ── Slot Signal Internal ──────────────────────────────────
+    # ── Frame received ────────────────────────────────────────
     @pyqtSlot(object)
     def _on_frame_received(self, frame: np.ndarray):
-        """Frame diterima dari Raspi — update thumbnail RGB, push ke YOLO."""
         self._last_raw_frame = frame
         _render_to_label(frame, self.lbl_thumb_rgb)
-
-        # Jika tidak inferring, tampilkan frame mentah di video utama
         if not self._inferring:
             _render_to_label(frame, self.lbl_main)
-
-        # Hitung FPS penerimaan
         now = time.time()
         self._fps_times.append(now)
         self._fps_times = [t for t in self._fps_times if now - t < 1.0]
         self.lbl_fps.setText(f"FPS: {len(self._fps_times)}")
-
-        # Push ke YOLO jika aktif
         if self._inferring and self._yolo_thread:
             self._yolo_thread.push_frame(frame)
 
-    @pyqtSlot(str)
-    def _on_recv_status(self, status: str):
-        self._log(f"[KONEKSI] Raspi: {status}")
-
+    # ── Inference done ────────────────────────────────────────
     @pyqtSlot(object, object, object, dict)
     def _on_inference_done(self,
-                           annotated:    np.ndarray,
-                           false_color:  np.ndarray,
-                           mask:         np.ndarray,
-                           result:       dict):
-        """
-        Dipanggil tiap kali YOLO selesai inferensi satu frame.
-        Update semua panel GUI dan kirim JSON ke Raspi.
-        """
-        # ── Video utama ───────────────────────────────────────
+                           annotated:   np.ndarray,
+                           false_color: np.ndarray,
+                           mask:        np.ndarray,
+                           result:      dict):
+        # Update visual panels
         self._last_annotated = annotated
-        _render_to_label(annotated, self.lbl_main)
-
-        # ── Thumbnail kanan ───────────────────────────────────
-        self._last_false = false_color
-        self._last_mask  = mask
+        self._last_false     = false_color
+        self._last_mask      = mask
+        _render_to_label(annotated,   self.lbl_main)
         _render_to_label(false_color, self.lbl_thumb_depth)
         _render_to_label(mask,        self.lbl_thumb_mask)
 
-        # ── Info bar ─────────────────────────────────────────
-        status = result.get("status", "NO_OBJECT")
-        conf   = result.get("confidence", 0.0)
-        cx     = result.get("center_x")
-        cy     = result.get("center_y")
+        # Update info bar (per frame — hanya tampilan, bukan keputusan)
+        conf     = result.get("confidence", 0.0)
+        cx       = result.get("center_x")
+        cy       = result.get("center_y")
+        cls_name = result.get("class")
 
-        self.lbl_conf.setText(f"Confidence: {conf:.2f}")
-        if cx is not None:
-            self.lbl_coord.setText(f"Center Coordinate\nx: {cx},  y: {cy}")
-        else:
-            self.lbl_coord.setText("Center Coordinate\nx: —,  y: —")
+        self.lbl_conf.setText(f"Conf: {conf:.2f}")
+        self.lbl_coord.setText(
+            f"Center\nx: {cx}  y: {cy}" if cx is not None else "Center\nx: —  y: —")
 
-        # Status label
-        if status == "DITERIMA":
-            self.lbl_status.setText("● DITERIMA")
-            self.lbl_status.setObjectName("lbl_status_ok")
-            self._counter_ok += 1
-        elif status == "DITOLAK":
-            self.lbl_status.setText("● DITOLAK")
-            self.lbl_status.setObjectName("lbl_status_fail")
-            self._counter_fail += 1
-        else:
-            self.lbl_status.setText("● NO OBJECT")
-            self.lbl_status.setObjectName("lbl_status_none")
-        self.lbl_status.setStyleSheet("")
-
-        self.lbl_counter.setText(
-            f"✅ Diterima: {self._counter_ok}   ❌ Ditolak: {self._counter_fail}"
-        )
-
-        # ── Log per frame ────────────────────────────────────
-        cls_name = result.get("class", "-")
-        self._log(
-            f"[YOLO] {status} | kelas: {cls_name} | "
-            f"conf: {conf:.2f} | cx: {cx} cy: {cy}"
-        )
-
-        # ── Akumulasi deteksi selama window 10 detik ─────────
         if not self._inferring:
             return
 
         now = time.time()
 
-        # Jika sedang idle antar telur, tunggu dulu
+        # ── State machine ─────────────────────────────────────
+
+        # 1. Sedang IDLE antar telur
         if self._in_idle:
-            sisa = self._idle_duration - (now - self._idle_start)
-            self.lbl_status.setText(f"● IDLE ({sisa:.1f}s)")
-            self.lbl_status.setObjectName("lbl_status_none")
-            self.lbl_status.setStyleSheet("")
-            if now - self._idle_start >= self._idle_duration:
+            sisa = self.idle_sec - (now - self._idle_start)
+            self._set_status(f"● IDLE ({sisa:.1f}s)", "lbl_status_none")
+            if sisa <= 0:
                 self._in_idle = False
-                self._start_window()
+                self._start_detection_window()
             return
 
-        # Mulai window baru jika belum aktif
-        if not self._window_active:
-            self._start_window()
+        # 2. Window belum aktif → mulai
+        if not self._det_win.active:
+            self._start_detection_window()
 
-        # Akumulasi kelas yang terdeteksi (bukan NO_OBJECT)
-        if cls_name not in ("-", None) and status != "NO_OBJECT":
-            self._accum_classes.append(cls_name.lower())
+        # 3. Feed ke DetectionWindow
+        keputusan = self._det_win.feed(cls_name)
 
-        # Update countdown di status bar
-        elapsed  = now - self._window_start
-        sisa_win = max(0, self._detection_window - elapsed)
-        detected = set(self._accum_classes)
-        self.lbl_status.setText(
-            f"● SCANNING ({sisa_win:.1f}s) | "
-            f"{'crack ⚠️' if any('crack' in c for c in detected) else 'egg ✓'}"
-        )
-        self.lbl_status.setObjectName("lbl_status_none")
-        self.lbl_status.setStyleSheet("")
+        # 4. Update status scanning
+        sisa_win = max(0, self.detection_window_sec - self._det_win.elapsed)
+        crack_ind = "⚠️ crack" if self._det_win.has_crack else "✓ egg"
+        streak    = self._det_win.crack_streak
+        streak_str = f" streak:{streak}" if streak > 0 else ""
+        self._set_status(
+            f"● SCAN ({sisa_win:.1f}s) {crack_ind}{streak_str}",
+            "lbl_status_none")
 
-        # Window selesai → ambil kesimpulan
-        if elapsed >= self._detection_window:
-            self._conclude()
+        # Log per frame (singkat)
+        logger.debug(
+            f"[FRAME] cls:{cls_name} conf:{conf:.2f} "
+            f"streak:{streak} sisa:{sisa_win:.1f}s")
 
-    # ── Helper ────────────────────────────────────────────────
-    def _start_window(self):
-        """Mulai window pengamatan baru untuk satu telur."""
-        self._accum_classes  = []
-        self._window_start   = time.time()
-        self._window_active  = True
-        self._log(f"[SCAN] Window deteksi dimulai ({self._detection_window:.0f} detik)...")
+        # 5. Keputusan final
+        if keputusan is not None:
+            self._on_decision(keputusan)
 
-    def _conclude(self):
-        """
-        Ambil kesimpulan dari akumulasi kelas selama window 10 detik.
-        Aturan:
-          - Ada kelas 'crack' (apapun) → DITOLAK
-          - Hanya 'egg' / tidak ada deteksi → DITERIMA
-        """
-        self._window_active = False
-        classes = self._accum_classes
-        total   = len(classes)
+    # ── Keputusan final ───────────────────────────────────────
+    def _on_decision(self, keputusan: str):
+        from collections import Counter as C
+        classes = self._det_win.classes
+        dist    = dict(C(classes))
+        early   = self._det_win.crack_streak >= self.early_crack_count
 
-        has_crack = any('crack' in c for c in classes)
-        has_egg   = any(c == 'egg' for c in classes)
-
-        if total == 0:
-            # Tidak ada deteksi sama sekali — skip, mulai window baru
-            self._log("[SCAN] Tidak ada objek terdeteksi — skip.")
-            self._start_window()
-            return
-
-        count = Counter(classes)
-        self._log(
-            f"[SCAN] Selesai — total deteksi: {total} | "
-            f"distribusi: {dict(count)}"
-        )
-
-        if has_crack:
-            keputusan = "DITOLAK"
-            self._counter_fail += 1
-            self._log(f"[KEPUTUSAN] ❌ DITOLAK — ditemukan kelas crack")
-        else:
-            keputusan = "DITERIMA"
-            self._counter_ok += 1
-            self._log(f"[KEPUTUSAN] ✅ DITERIMA — tidak ada crack")
-
-        # Update counter label
-        self.lbl_counter.setText(
-            f"✅ Diterima: {self._counter_ok}   ❌ Ditolak: {self._counter_fail}"
-        )
-
-        # Update status label
         if keputusan == "DITERIMA":
-            self.lbl_status.setText("● DITERIMA")
-            self.lbl_status.setObjectName("lbl_status_ok")
+            self._counter_ok += 1
+            self._set_status("● DITERIMA", "lbl_status_ok")
+            tag = "✅ DITERIMA"
         else:
-            self.lbl_status.setText("● DITOLAK")
-            self.lbl_status.setObjectName("lbl_status_fail")
-        self.lbl_status.setStyleSheet("")
+            self._counter_fail += 1
+            self._set_status("● DITOLAK", "lbl_status_fail")
+            tag = f"❌ DITOLAK {'(EARLY REJECT)' if early else ''}"
+
+        self._log(
+            f"[KEPUTUSAN] {tag} | "
+            f"distribusi: {dist} | total: {len(classes)} frame")
+
+        self.lbl_counter.setText(
+            f"✅ Diterima: {self._counter_ok}   ❌ Ditolak: {self._counter_fail}")
 
         # Kirim JSON ke Raspi
         result_final = {
-            "status":    keputusan,
-            "class":     "crack" if has_crack else "egg",
+            "status":     keputusan,
+            "class":      "crack" if keputusan == "DITOLAK" else "egg",
             "confidence": 1.0,
-            "timestamp": datetime.now().isoformat()
+            "timestamp":  datetime.now().isoformat()
         }
         if self._sender_thread:
             self._sender_thread.push(result_final)
 
-        # Mulai idle sebelum telur berikutnya
+        # Masuk idle
         self._in_idle    = True
         self._idle_start = time.time()
-        self._log(f"[IDLE] Menunggu {self._idle_duration:.0f} detik untuk telur berikutnya...")
+        self._log(f"[IDLE] {self.idle_sec:.0f}s sebelum telur berikutnya...")
+
+    # ── Helpers ───────────────────────────────────────────────
+    def _start_detection_window(self):
+        self._det_win = DetectionWindow(
+            self.detection_window_sec, self.early_crack_count)
+        self._det_win.start()
+        self._log(
+            f"[SCAN] Window baru — {self.detection_window_sec:.0f}s  "
+            f"early_crack:{self.early_crack_count}x")
+
+    def _reset_window_state(self):
+        self._in_idle    = False
+        self._idle_start = 0.0
+        self._det_win    = DetectionWindow(
+            self.detection_window_sec, self.early_crack_count)
+
+    def _set_status(self, text: str, obj_name: str):
+        self.lbl_status.setText(text)
+        self.lbl_status.setObjectName(obj_name)
+        self.lbl_status.setStyleSheet("")
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        _render_to_label(self._last_annotated or self._last_raw_frame, self.lbl_main)
+        _render_to_label(self._last_raw_frame,  self.lbl_thumb_rgb)
+        _render_to_label(self._last_false,       self.lbl_thumb_depth)
+        _render_to_label(self._last_mask,        self.lbl_thumb_mask)
 
     def _log(self, msg: str, error: bool = False):
         now  = datetime.now().strftime("%H:%M:%S")
         line = f"[{now}] {msg}"
         if error:
-            self.log_widget.append(
-                f'<span style="color:#EF5350;">{line}</span>')
+            self.log_widget.append(f'<span style="color:#EF5350;">{line}</span>')
         else:
             self.log_widget.append(line)
         self.log_widget.verticalScrollBar().setValue(
@@ -786,15 +611,10 @@ class MainWindow(QMainWindow):
 
     # ── Cleanup ───────────────────────────────────────────────
     def closeEvent(self, event):
-        if self._yolo_thread:
-            self._yolo_thread.stop()
-            self._yolo_thread.wait(3000)
-        if self._recv_thread:
-            self._recv_thread.stop()
-            self._recv_thread.wait(3000)
-        if self._sender_thread:
-            self._sender_thread.stop()
-            self._sender_thread.wait(3000)
+        for t in [self._yolo_thread, self._recv_thread, self._sender_thread]:
+            if t:
+                t.stop()
+                t.wait(3000)
         logger.info("[APP] Aplikasi PC ditutup.")
         event.accept()
 

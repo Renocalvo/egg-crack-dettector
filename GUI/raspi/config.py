@@ -34,6 +34,7 @@ SERVO_IDLE_US    = int  (os.getenv("SERVO_IDLE_US",    "1500"))
 SERVO_TERIMA_US  = int  (os.getenv("SERVO_TERIMA_US",  "2500"))
 SERVO_TOLAK_US   = int  (os.getenv("SERVO_TOLAK_US",   "500"))
 SERVO_RETURN_SEC = float(os.getenv("SERVO_RETURN_SEC", "1.2"))
+SERVO_DELAY_SEC  = float(os.getenv("SERVO_DELAY_SEC",  "0.0"))
 
 # ── Logging ───────────────────────────────────────────────────
 LOG_FILE  = "logs/raspi.log"

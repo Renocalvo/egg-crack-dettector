@@ -12,7 +12,8 @@ from PyQt6.QtWidgets import (
     QGroupBox, QMessageBox
 )
 import config as cfg
-from config import (SERVO_IDLE_US, SERVO_TERIMA_US, SERVO_TOLAK_US, SERVO_RETURN_SEC)
+from config import (SERVO_IDLE_US, SERVO_TERIMA_US, SERVO_TOLAK_US,
+                     SERVO_RETURN_SEC, SERVO_DELAY_SEC)
 
 
 class SettingsDialog(QDialog):
@@ -90,6 +91,17 @@ class SettingsDialog(QDialog):
         self.spin_return.setDecimals(1); self.spin_return.setValue(SERVO_RETURN_SEC)
         self.spin_return.setSuffix(" detik")
         servo_lay.addLayout(_row("Waktu Tahan:", self.spin_return))
+
+        # ── Delay Respon — waktu tunggu sebelum servo mulai bergerak ──
+        self.spin_delay = QDoubleSpinBox()
+        self.spin_delay.setRange(0.0, 5.0); self.spin_delay.setSingleStep(0.1)
+        self.spin_delay.setDecimals(2); self.spin_delay.setValue(SERVO_DELAY_SEC)
+        self.spin_delay.setSuffix(" detik")
+        self.spin_delay.setToolTip(
+            "Waktu tunggu sebelum servo mulai bergerak setelah\n"
+            "menerima sinyal DITERIMA/DITOLAK dari laptop."
+        )
+        servo_lay.addLayout(_row("Delay Respon:", self.spin_delay))
 
         # Tombol test servo
         row_test = QHBoxLayout()
@@ -189,6 +201,7 @@ class SettingsDialog(QDialog):
             'SERVO_TERIMA_US': str(self.spin_terima.value()),
             'SERVO_TOLAK_US':  str(self.spin_tolak.value()),
             'SERVO_RETURN_SEC':f"{self.spin_return.value():.1f}",
+            'SERVO_DELAY_SEC': f"{self.spin_delay.value():.2f}",
             'CAM_WIDTH':       str(self.spin_camw.value()),
             'CAM_HEIGHT':      str(self.spin_camh.value()),
             'CAM_FPS':         str(self.spin_fps.value()),

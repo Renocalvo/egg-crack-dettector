@@ -12,8 +12,8 @@ from PyQt6.QtWidgets import (
     QGroupBox, QMessageBox
 )
 import config as cfg
-from config import (SERVO_IDLE_US, SERVO_TERIMA_US, SERVO_TOLAK_US,
-                     SERVO_RETURN_SEC, SERVO_DELAY_SEC)
+from config import (SERVO_STOP_US, SERVO_TERIMA_US, SERVO_TOLAK_US,
+                     SERVO_ROTATE_SEC, SERVO_DELAY_SEC)
 
 
 class SettingsDialog(QDialog):
@@ -59,38 +59,58 @@ class SettingsDialog(QDialog):
         root.addWidget(grp_net)
 
         # ── Servo ─────────────────────────────────────────────
-        grp_servo = QGroupBox("Servo SG90")
+        grp_servo = QGroupBox("Servo MG90 360° (Continuous Rotation)")
         servo_lay = QVBoxLayout(grp_servo)
+
+        lbl_info = QLabel(
+            "Motor ini tidak memiliki posisi sudut tetap — pulsewidth\n"
+            "mengatur KECEPATAN & ARAH putaran, bukan posisi."
+        )
+        lbl_info.setStyleSheet("color:#78909C; font-size:10px;")
+        lbl_info.setWordWrap(True)
+        servo_lay.addWidget(lbl_info)
 
         self.spin_pin = QSpinBox()
         self.spin_pin.setRange(0, 27)
         self.spin_pin.setValue(cfg.SERVO_PIN)
         servo_lay.addLayout(_row("GPIO PIN (BCM):", self.spin_pin))
 
-        # Pulsewidth — posisi servo (µs)
-        self.spin_idle = QSpinBox()
-        self.spin_idle.setRange(400, 2600); self.spin_idle.setSingleStep(50)
-        self.spin_idle.setValue(SERVO_IDLE_US)
-        self.spin_idle.setSuffix(" µs")
-        servo_lay.addLayout(_row("Idle (90°):", self.spin_idle))
+        # Pulsewidth — kecepatan & arah putaran (µs)
+        self.spin_stop = QSpinBox()
+        self.spin_stop.setRange(1400, 1600); self.spin_stop.setSingleStep(5)
+        self.spin_stop.setValue(SERVO_STOP_US)
+        self.spin_stop.setSuffix(" µs")
+        self.spin_stop.setToolTip(
+            "Titik netral/stop. WAJIB dikalibrasi per unit motor\n"
+            "(biasanya 1480-1520 µs) — gunakan tombol 'Test STOP'\n"
+            "dan geser nilai ini sampai motor benar-benar diam."
+        )
+        servo_lay.addLayout(_row("Netral / Stop:", self.spin_stop))
 
         self.spin_terima = QSpinBox()
         self.spin_terima.setRange(400, 2600); self.spin_terima.setSingleStep(50)
         self.spin_terima.setValue(SERVO_TERIMA_US)
         self.spin_terima.setSuffix(" µs")
-        servo_lay.addLayout(_row("Terima (180°):", self.spin_terima))
+        self.spin_terima.setToolTip("Arah & kecepatan putar saat DITERIMA.")
+        servo_lay.addLayout(_row("Diterima (arah/speed):", self.spin_terima))
 
         self.spin_tolak = QSpinBox()
         self.spin_tolak.setRange(400, 2600); self.spin_tolak.setSingleStep(50)
         self.spin_tolak.setValue(SERVO_TOLAK_US)
         self.spin_tolak.setSuffix(" µs")
-        servo_lay.addLayout(_row("Tolak (0°):", self.spin_tolak))
+        self.spin_tolak.setToolTip("Arah & kecepatan putar saat DITOLAK.")
+        servo_lay.addLayout(_row("Ditolak (arah/speed):", self.spin_tolak))
 
-        self.spin_return = QDoubleSpinBox()
-        self.spin_return.setRange(0.2, 5.0); self.spin_return.setSingleStep(0.1)
-        self.spin_return.setDecimals(1); self.spin_return.setValue(SERVO_RETURN_SEC)
-        self.spin_return.setSuffix(" detik")
-        servo_lay.addLayout(_row("Waktu Tahan:", self.spin_return))
+        self.spin_rotate = QDoubleSpinBox()
+        self.spin_rotate.setRange(0.1, 5.0); self.spin_rotate.setSingleStep(0.1)
+        self.spin_rotate.setDecimals(2); self.spin_rotate.setValue(SERVO_ROTATE_SEC)
+        self.spin_rotate.setSuffix(" detik")
+        self.spin_rotate.setToolTip(
+            "Lama motor berputar sebelum otomatis stop.\n"
+            "Tidak ada feedback posisi, jadi sudut gerak ditentukan\n"
+            "murni dari kombinasi kecepatan (µs) x durasi ini."
+        )
+        servo_lay.addLayout(_row("Durasi Putar:", self.spin_rotate))
 
         # ── Delay Respon — waktu tunggu sebelum servo mulai bergerak ──
         self.spin_delay = QDoubleSpinBox()
@@ -107,16 +127,16 @@ class SettingsDialog(QDialog):
         row_test = QHBoxLayout()
         btn_test_terima = QPushButton("Test TERIMA")
         btn_test_tolak  = QPushButton("Test TOLAK")
-        btn_test_idle   = QPushButton("Reset IDLE")
+        btn_test_stop   = QPushButton("Test STOP")
         btn_test_terima.setStyleSheet("background:#1B5E20;")
         btn_test_tolak.setStyleSheet("background:#B71C1C;")
-        btn_test_idle.setStyleSheet("background:#37474F;")
+        btn_test_stop.setStyleSheet("background:#37474F;")
         btn_test_terima.clicked.connect(lambda: self._test_servo("TERIMA"))
         btn_test_tolak.clicked.connect(lambda: self._test_servo("TOLAK"))
-        btn_test_idle.clicked.connect(lambda: self._test_servo("IDLE"))
+        btn_test_stop.clicked.connect(lambda: self._test_servo("STOP"))
         row_test.addWidget(btn_test_terima)
         row_test.addWidget(btn_test_tolak)
-        row_test.addWidget(btn_test_idle)
+        row_test.addWidget(btn_test_stop)
         servo_lay.addLayout(row_test)
 
         root.addWidget(grp_servo)
@@ -188,24 +208,24 @@ class SettingsDialog(QDialog):
         elif action == "TOLAK":
             threading.Thread(target=servo.tolak, daemon=True).start()
         else:
-            threading.Thread(target=servo.idle, daemon=True).start()
+            threading.Thread(target=servo.stop, daemon=True).start()
 
     def _save(self):
         env_path = Path(__file__).parent / '.env'
         vals = {
-            'LAPTOP_IP':       self.edit_ip.text().strip(),
-            'VIDEO_PORT':      str(self.spin_vport.value()),
-            'RESULT_PORT':     str(self.spin_rport.value()),
-            'SERVO_PIN':       str(self.spin_pin.value()),
-            'SERVO_IDLE_US':   str(self.spin_idle.value()),
-            'SERVO_TERIMA_US': str(self.spin_terima.value()),
-            'SERVO_TOLAK_US':  str(self.spin_tolak.value()),
-            'SERVO_RETURN_SEC':f"{self.spin_return.value():.1f}",
-            'SERVO_DELAY_SEC': f"{self.spin_delay.value():.2f}",
-            'CAM_WIDTH':       str(self.spin_camw.value()),
-            'CAM_HEIGHT':      str(self.spin_camh.value()),
-            'CAM_FPS':         str(self.spin_fps.value()),
-            'JPEG_QUALITY':    str(self.spin_jpeg.value()),
+            'LAPTOP_IP':        self.edit_ip.text().strip(),
+            'VIDEO_PORT':       str(self.spin_vport.value()),
+            'RESULT_PORT':      str(self.spin_rport.value()),
+            'SERVO_PIN':        str(self.spin_pin.value()),
+            'SERVO_STOP_US':    str(self.spin_stop.value()),
+            'SERVO_TERIMA_US':  str(self.spin_terima.value()),
+            'SERVO_TOLAK_US':   str(self.spin_tolak.value()),
+            'SERVO_ROTATE_SEC': f"{self.spin_rotate.value():.2f}",
+            'SERVO_DELAY_SEC':  f"{self.spin_delay.value():.2f}",
+            'CAM_WIDTH':        str(self.spin_camw.value()),
+            'CAM_HEIGHT':       str(self.spin_camh.value()),
+            'CAM_FPS':          str(self.spin_fps.value()),
+            'JPEG_QUALITY':     str(self.spin_jpeg.value()),
         }
         for k, v in vals.items():
             set_key(str(env_path), k, v)

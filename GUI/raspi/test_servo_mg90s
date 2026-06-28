@@ -1,0 +1,13 @@
+# quick_stop_test.py
+import lgpio, time
+
+h = lgpio.gpiochip_open(0)
+lgpio.gpio_claim_output(h, 12)
+
+for us in range(1480, 1510, 1):  # sweep pelan
+    duty = (us / 20000) * 100
+    lgpio.tx_pwm(h, 12, 50, duty)
+    print(f"{us}µs — apakah diam? (tunggu 2s)")
+    time.sleep(2)
+
+lgpio.gpiochip_close(h)

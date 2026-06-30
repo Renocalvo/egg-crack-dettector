@@ -52,10 +52,10 @@ class ServoController:
         logger.info(f"[SERVO] -> STOP setelah {label}")
 
     def terima(self):
-        self._rotate(SERVO_TERIMA_US, "DITERIMA")
+        self._rotate(SERVO_TOLAK_US, "DITERIMA")   # ditukar
 
     def tolak(self):
-        self._rotate(SERVO_TOLAK_US, "DITOLAK")
+        self._rotate(SERVO_TERIMA_US, "DITOLAK")   # ditukar
 
     def cleanup(self):
         lgpio.tx_pwm(self._h, self.pin, 0, 0)

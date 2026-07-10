@@ -10,7 +10,7 @@ import logging
 import numpy as np
 import time
 from datetime import datetime
-from collections import Counter
+from collections import Counter, deque
 
 from PyQt6.QtCore    import Qt, QThread, pyqtSignal, pyqtSlot
 from PyQt6.QtGui     import QPixmap, QImage
@@ -155,20 +155,38 @@ class DetectionWindow:
 
     Aturan keputusan:
         early_reject : jika kelas 'crack' muncul >= early_crack_count
-                       kali berturut-turut → langsung DITOLAK tanpa
-                       menunggu window selesai (early reject)
+                       kali DALAM crack_window_frames frame terakhir
+                       (rolling count, tidak harus berurutan mutlak)
+                       → langsung DITOLAK tanpa menunggu window selesai
         normal       : setelah window_sec detik, jika ada kelas 'crack'
                        → DITOLAK, else → DITERIMA
+
+    Catatan perbaikan:
+    Sebelumnya early-reject memakai "streak" berturut-turut yang
+    di-reset ke 0 setiap kali ada satu frame non-crack/None di
+    tengah-tengah (mis. deteksi sempat miss 1 frame karena motion
+    blur / confidence turun sesaat). Akibatnya crack yang sebenarnya
+    sudah terdeteksi berkali-kali dalam beberapa menit tidak pernah
+    memicu DITOLAK karena counter selalu balik ke 0.
+    Sekarang dipakai rolling window (deque) sepanjang
+    `crack_window_frames` frame terakhir — early reject dipicu kalau
+    jumlah frame crack di dalam jendela itu sudah mencapai
+    `early_crack_count`, walau ada beberapa frame non-crack di
+    antaranya.
     """
     def __init__(self, window_sec: float = 10.0,
-                 early_crack_count: int = 5):
+                 early_crack_count: int = 5,
+                 crack_window_frames: int | None = None):
         self.window_sec        = window_sec
         self.early_crack_count = early_crack_count
+        # Jendela rolling untuk early-reject. Default: 2x early_crack_count
+        # supaya ada toleransi terhadap frame yang miss/meleset.
+        self.crack_window_frames = crack_window_frames or max(early_crack_count * 2, early_crack_count)
         self._reset()
 
     def _reset(self):
-        self._classes:      list  = []   # semua kelas terdeteksi
-        self._crack_streak: int   = 0    # berturut-turut crack
+        self._classes:      list  = []   # semua kelas terdeteksi (untuk keputusan akhir window)
+        self._recent_crack: deque = deque(maxlen=self.crack_window_frames)  # rolling crack flags
         self._start:        float = 0.0
         self._active:       bool  = False
 
@@ -189,19 +207,19 @@ class DetectionWindow:
         if not self._active:
             return None
 
-        # Akumulasi kelas
+        is_crack = bool(cls_name) and cls_name not in ("-",) and 'crack' in cls_name.lower()
+
+        # Akumulasi kelas (untuk keputusan window normal)
         if cls_name and cls_name not in ("-",):
             self._classes.append(cls_name.lower())
-            # Hitung streak crack untuk early reject
-            if 'crack' in cls_name.lower():
-                self._crack_streak += 1
-            else:
-                self._crack_streak = 0
-        else:
-            self._crack_streak = 0
 
-        # Early reject: crack N frame berturut-turut
-        if self._crack_streak >= self.early_crack_count:
+        # Rolling window untuk early reject — frame miss/non-crack
+        # TIDAK mereset progres, hanya "geser" jendela.
+        self._recent_crack.append(is_crack)
+
+        # Early reject: crack muncul >= early_crack_count kali
+        # di antara crack_window_frames frame terakhir
+        if sum(self._recent_crack) >= self.early_crack_count:
             self._active = False
             return "DITOLAK"
 
@@ -215,6 +233,32 @@ class DetectionWindow:
             return "DITOLAK" if has_crack else "DITERIMA"
 
         return None   # masih scanning
+
+    def update_params(self, window_sec: float | None = None,
+                       early_crack_count: int | None = None,
+                       crack_window_frames: int | None = None):
+        """
+        Update parameter secara live tanpa mereset progres window
+        yang sedang berjalan. Dipanggil dari Settings dialog saat
+        tombol Apply ditekan, supaya perubahan langsung berlaku
+        walau window saat ini belum selesai.
+        """
+        if window_sec is not None:
+            self.window_sec = window_sec
+        if early_crack_count is not None:
+            self.early_crack_count = early_crack_count
+        if crack_window_frames is not None:
+            new_maxlen = crack_window_frames
+        elif early_crack_count is not None:
+            new_maxlen = max(self.early_crack_count * 2, self.early_crack_count)
+        else:
+            new_maxlen = self.crack_window_frames
+
+        if new_maxlen != self.crack_window_frames:
+            self.crack_window_frames = new_maxlen
+            # Pertahankan riwayat crack flag yang masih relevan, cuma
+            # ganti kapasitas deque-nya (tidak menghapus progres).
+            self._recent_crack = deque(self._recent_crack, maxlen=new_maxlen)
 
     @property
     def active(self) -> bool:
@@ -230,7 +274,8 @@ class DetectionWindow:
 
     @property
     def crack_streak(self) -> int:
-        return self._crack_streak
+        """Jumlah crack dalam rolling window saat ini (dipakai untuk display UI)."""
+        return sum(self._recent_crack)
 
     @property
     def has_crack(self) -> bool:
@@ -249,7 +294,7 @@ class MainWindow(QMainWindow):
         # ── Parameter deteksi (bisa diubah dari Settings) ────
         self.detection_window_sec  = 10.0   # detik per telur
         self.idle_sec              = 2.0    # detik idle antar telur
-        self.early_crack_count     = 5      # frame crack berturut → early reject
+        self.early_crack_count     = 5      # jumlah crack dalam rolling window → early reject
 
         # ── State ────────────────────────────────────────────
         self._inferring      = False
@@ -519,7 +564,7 @@ class MainWindow(QMainWindow):
         sisa_win = max(0, self.detection_window_sec - self._det_win.elapsed)
         crack_ind = "⚠️ crack" if self._det_win.has_crack else "✓ egg"
         streak    = self._det_win.crack_streak
-        streak_str = f" streak:{streak}" if streak > 0 else ""
+        streak_str = f" crack:{streak}/{self.early_crack_count}" if streak > 0 else ""
         self._set_status(
             f"● SCAN ({sisa_win:.1f}s) {crack_ind}{streak_str}",
             "lbl_status_none")
@@ -527,7 +572,7 @@ class MainWindow(QMainWindow):
         # Log per frame (singkat)
         logger.debug(
             f"[FRAME] cls:{cls_name} conf:{conf:.2f} "
-            f"streak:{streak} sisa:{sisa_win:.1f}s")
+            f"rolling_crack:{streak} sisa:{sisa_win:.1f}s")
 
         # 5. Keputusan final
         if keputusan is not None:
@@ -585,6 +630,24 @@ class MainWindow(QMainWindow):
         self._idle_start = 0.0
         self._det_win    = DetectionWindow(
             self.detection_window_sec, self.early_crack_count)
+
+    def apply_detection_settings(self, window_sec: float,
+                                  idle_sec: float,
+                                  early_crack_count: int):
+        """
+        Dipanggil dari SettingsDialog saat tombol Apply ditekan.
+        Mengupdate parameter runtime DAN window yang sedang aktif
+        (kalau ada), supaya perubahan langsung berlaku tanpa perlu
+        menunggu window/siklus telur saat ini selesai.
+        """
+        self.detection_window_sec = window_sec
+        self.idle_sec             = idle_sec
+        self.early_crack_count    = early_crack_count
+
+        if self._det_win is not None:
+            self._det_win.update_params(
+                window_sec=window_sec,
+                early_crack_count=early_crack_count)
 
     def _set_status(self, text: str, obj_name: str):
         self.lbl_status.setText(text)

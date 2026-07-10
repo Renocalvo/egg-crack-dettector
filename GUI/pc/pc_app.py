@@ -195,9 +195,15 @@ class DetectionWindow:
         self._start  = time.time()
         self._active = True
 
-    def feed(self, cls_name: str | None) -> str | None:
+    def feed(self, classes) -> str | None:
         """
-        Masukkan satu hasil inferensi.
+        Masukkan hasil inferensi SATU FRAME.
+
+        Args:
+            classes: bisa berupa list semua kelas yang terdeteksi dalam
+                     frame ini (mis. ["egg", "crack"] kalau egg dan crack
+                     terdeteksi bersamaan di frame yang sama), ATAU
+                     string tunggal / None untuk kompatibilitas lama.
 
         Returns:
             None           — window belum selesai
@@ -207,23 +213,41 @@ class DetectionWindow:
         if not self._active:
             return None
 
-        is_crack = bool(cls_name) and cls_name not in ("-",) and 'crack' in cls_name.lower()
+        # Normalisasi input jadi list, supaya egg & crack yang muncul
+        # BERSAMAAN di satu frame dua-duanya kehitung, bukan cuma
+        # salah satu yang "menang" berdasar confidence tertinggi.
+        if classes is None:
+            class_list = []
+        elif isinstance(classes, str):
+            class_list = [classes] if classes not in ("-",) else []
+        else:
+            class_list = [c for c in classes if c and c not in ("-",)]
+
+        is_crack = any('crack' in c.lower() for c in class_list)
 
         # Akumulasi kelas (untuk keputusan window normal)
-        if cls_name and cls_name not in ("-",):
-            self._classes.append(cls_name.lower())
+        for c in class_list:
+            self._classes.append(c.lower())
 
-        # Rolling window untuk early reject — frame miss/non-crack
-        # TIDAK mereset progres, hanya "geser" jendela.
+        # Rolling crack tracker — HANYA untuk INFORMASI/TAMPILAN (mis.
+        # indikator "crack:3/5" di status bar), TIDAK memicu keputusan
+        # lebih awal. early_crack_count sengaja tidak lagi dipakai untuk
+        # mengambil keputusan, karena:
+        #   - Telur berputar/masuk sesuai siklus window_sec. Kalau
+        #     keputusan diambil lebih cepat dari window_sec, servo bisa
+        #     aktif SEBELUM telur benar-benar berada di posisi yang
+        #     tepat, sehingga telur tidak pas ke jalur DITOLAK.
+        #   - Dalam window_sec, satu telur bisa "membaca" crack lebih
+        #     dari sekali (mis. permukaan crack sempat tidak menghadap
+        #     kamera lalu menghadap lagi karena telur bergerak/berputar).
+        #     Ini tetap valid sebagai sinyal crack, tapi bukan alasan
+        #     untuk memutuskan lebih awal — cukup dicatat.
+        # Keputusan akhir SELALU menunggu window_sec penuh, berdasarkan
+        # apakah crack pernah tercatat kapan pun selama window berjalan
+        # (lihat has_crack di bawah).
         self._recent_crack.append(is_crack)
 
-        # Early reject: crack muncul >= early_crack_count kali
-        # di antara crack_window_frames frame terakhir
-        if sum(self._recent_crack) >= self.early_crack_count:
-            self._active = False
-            return "DITOLAK"
-
-        # Cek apakah window sudah habis
+        # Cek apakah window sudah habis — satu-satunya titik keputusan.
         elapsed = time.time() - self._start
         if elapsed >= self.window_sec:
             self._active = False
@@ -532,6 +556,12 @@ class MainWindow(QMainWindow):
         cx       = result.get("center_x")
         cy       = result.get("center_y")
         cls_name = result.get("class")
+        # Semua kelas yang terdeteksi di frame ini (egg & crack bisa
+        # muncul bersamaan). Fallback ke class tunggal kalau yolo_engine
+        # versi lama yang belum mengirim "classes".
+        cls_list = result.get("classes")
+        if cls_list is None:
+            cls_list = [cls_name] if cls_name else []
 
         self.lbl_conf.setText(f"Conf: {conf:.2f}")
         self.lbl_coord.setText(
@@ -557,8 +587,10 @@ class MainWindow(QMainWindow):
         if not self._det_win.active:
             self._start_detection_window()
 
-        # 3. Feed ke DetectionWindow
-        keputusan = self._det_win.feed(cls_name)
+        # 3. Feed ke DetectionWindow (kirim SEMUA class di frame ini,
+        #    bukan cuma satu class dengan confidence tertinggi — supaya
+        #    egg & crack yang muncul bersamaan dua-duanya tercatat)
+        keputusan = self._det_win.feed(cls_list)
 
         # 4. Update status scanning
         sisa_win = max(0, self.detection_window_sec - self._det_win.elapsed)
@@ -571,7 +603,7 @@ class MainWindow(QMainWindow):
 
         # Log per frame (singkat)
         logger.debug(
-            f"[FRAME] cls:{cls_name} conf:{conf:.2f} "
+            f"[FRAME] classes:{cls_list} conf:{conf:.2f} "
             f"rolling_crack:{streak} sisa:{sisa_win:.1f}s")
 
         # 5. Keputusan final

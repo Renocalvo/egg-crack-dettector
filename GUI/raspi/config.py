@@ -37,8 +37,13 @@ SERVO_PIN         = int  (os.getenv("SERVO_PIN",         "14"))
 SERVO_STOP_US     = int  (os.getenv("SERVO_STOP_US",     "1500"))
 SERVO_TERIMA_US   = int  (os.getenv("SERVO_TERIMA_US",   "2000"))
 SERVO_TOLAK_US    = int  (os.getenv("SERVO_TOLAK_US",    "1000"))
-SERVO_ROTATE_SEC  = float(os.getenv("SERVO_ROTATE_SEC",  "0.5"))
 SERVO_DELAY_SEC   = float(os.getenv("SERVO_DELAY_SEC",   "0.0"))
+# Durasi putar dipisah per arah karena kecepatan CW/CCW motor tidak simetris
+# meskipun offset pulsewidth-nya simetris terhadap SERVO_STOP_US.
+# Kalibrasi manual: ukur derajat aktual untuk durasi tertentu, lalu hitung
+# durasi_target = (90 / derajat_terukur) * durasi_test
+SERVO_ROTATE_SEC_TERIMA = float(os.getenv("SERVO_ROTATE_SEC_TERIMA", "0.35"))
+SERVO_ROTATE_SEC_TOLAK  = float(os.getenv("SERVO_ROTATE_SEC_TOLAK",  "0.35"))
 
 # ── Logging ───────────────────────────────────────────────────
 LOG_FILE  = "logs/raspi.log"
